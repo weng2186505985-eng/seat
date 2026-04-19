@@ -51,15 +51,12 @@ class TaskManager:
         s_range = data['seatRange']
         pref = data.get('preferred_seat', "")
         
-        # 为该任务创建 Bot 实例以获取黑名单状态
-        self.bots[task_id] = UltraFastBot()
-        bot = self.bots[task_id]
+        tid = task_id
+        if tid not in self.bots: self.bots[tid] = UltraFastBot()
+        bot = self.bots[tid]
 
-        # 构建并过滤黑名单座位
         seat_list = self._build_seat_list(hall, s_range, pref, bot)
-        if not seat_list:
-            logger.error(f"❌ 任务 {task_id} 座位解析失败或全在黑名单中")
-            return None
+        if not seat_list: return None
 
         new_task = {
             "id": task_id,
@@ -92,7 +89,6 @@ class TaskManager:
                 for i in range(start, end + 1):
                     name = str(i)
                     if name in self.seat_map[hall]:
-                        # 核心修改：过滤黑名单座位
                         if bot and name in bot.blacklist: continue
                         raw_list.append((name, self.seat_map[hall][name]))
             except: pass
@@ -140,11 +136,9 @@ class TaskManager:
                     t_time = datetime.datetime.strptime(task['triggerTime'], "%H:%M:%S").replace(
                         year=now.year, month=now.month, day=now.day
                     )
-                    
-                    # 核心修复：如果今天的触发时间已经过去超过 10 分钟，顺延到明天
-                    if now > t_time + datetime.timedelta(minutes=10):
+                    if now > t_time + datetime.timedelta(minutes=2):
                         t_time += datetime.timedelta(days=1)
-
+                    
                     diff = (t_time - now).total_seconds()
 
                     if 0 < diff < 900 and task['status'] == "waiting":
@@ -183,14 +177,26 @@ class TaskManager:
                 "date_offset": task['dateOffset'], "start_time": task['startTime'], "end_time": task['endTime']
             }
             
-            success = bot.snatch_action(params, skip_refresh=skip_refresh)
+            # --- 3次重试逻辑 ---
+            success = False
+            for i in range(4): # 1次首抢 + 3次重试 = 4
+                if i > 0:
+                    logger.warning(f"⚠️ 任务 {tid} 正在进行第 {i} 次重试...")
+                    time.sleep(2)
+                
+                success = bot.snatch_action(params, skip_refresh=(skip_refresh or i > 0))
+                if success: break
             
             with self.lock:
                 if success:
                     task['status'] = "completed"
                     task['last_run_date'] = datetime.datetime.now().strftime("%Y-%m-%d")
-                    task['preferred_seat'] = task['seat_list'][0][0] # 示例简化
+                    task['preferred_seat'] = task['seat_list'][0][0]
                 else:
                     task['status'] = "failed"
+                    logger.error(f"❌ 任务 {tid} 最终失败，发送告警推送。")
+                    # 发送最终失败通知
+                    err_msg = f"场馆：{task['floor']}\n座位范围：{task['seat_display']}\n已连续失败 3 次，任务已停止，请手动检查。"
+                    bot.notify(False, custom_msg=err_msg)
             self.save_tasks()
         threading.Thread(target=_worker, daemon=True).start()
