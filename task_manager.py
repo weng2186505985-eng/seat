@@ -242,9 +242,9 @@ class TaskManager:
                     break
             
             with self.lock:
+                task['last_run_date'] = datetime.datetime.now().strftime("%Y-%m-%d")
                 if success:
                     task['status'] = "completed"
-                    task['last_run_date'] = datetime.datetime.now().strftime("%Y-%m-%d")
                     # 智能锁定：记录真实抢到的座位号
                     task['preferred_seat'] = success
                 else:
