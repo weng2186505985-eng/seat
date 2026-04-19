@@ -25,14 +25,20 @@ class UltraFastBot:
             "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1"
         ]
 
-    def notify(self, success, seat_name="", custom_msg=""):
+    def notify(self, success, seat_name="", custom_msg="", custom_title=""):
+        """Server酱推送：支持自定义标题和内容"""
         if not config.SCKEY: return
         url = f"https://sctapi.ftqq.com/{config.SCKEY}.send"
-        title = "🎉 HDU 抢座成功！" if success else "❌ HDU 抢座最终失败"
-        if success:
+        
+        # 优先级：自定义标题 > 默认成功/失败标题
+        title = custom_title if custom_title else ("🎉 HDU 抢座成功！" if success else "❌ HDU 抢座最终失败")
+        
+        if custom_msg:
+            content = custom_msg
+        elif success:
             content = f"座位：{seat_name}\n日期：{datetime.datetime.now().strftime('%Y-%m-%d')}"
         else:
-            content = custom_msg if custom_msg else "连续多次尝试均未抢到目标座位。"
+            content = "连续多次尝试均未抢到目标座位。"
         
         try:
             requests.post(url, data={"title": title, "desp": content}, timeout=5)
@@ -44,7 +50,6 @@ class UltraFastBot:
         try:
             with sync_playwright() as p:
                 iphone = p.devices['iPhone 14']
-                # 使用嵌套 with 确保资源彻底释放
                 with p.chromium.launch(headless=True) as browser:
                     with browser.new_context(**iphone) as context:
                         page = context.new_page()
@@ -102,7 +107,6 @@ class UltraFastBot:
         url = "https://hdu.huitu.zhishulib.com/Seat/Index/bookSeats?LAB_JSON=1"
 
         import concurrent.futures
-        # 使用 Event 确保线程安全
         success_event = threading.Event()
         success_name = [""]
 
@@ -118,9 +122,7 @@ class UltraFastBot:
                 resp = requests.post(url, data=data, headers=headers, timeout=10)
                 try:
                     res_json = resp.json()
-                except:
-                    logger.error(f"⚠️ {name}号响应格式错误 (非JSON): {resp.text[:100]}")
-                    return False
+                except: return False
 
                 msg = res_json.get('msg') or res_json.get('message') or str(res_json)
                 
@@ -130,20 +132,20 @@ class UltraFastBot:
                     success_event.set()
                     return True
                 elif ("频繁" in msg or "太快" in msg) and not is_retry:
-                    logger.warning(f"⏳ {name}号请求受限，2秒后重试...")
                     time.sleep(2)
                     return try_book(item, is_retry=True)
                 elif "必须在预约人列表" in msg:
-                    logger.error(f"🚫 {name}号为特权座，已拉黑。")
                     self.blacklist.add(name)
-            except requests.exceptions.RequestException as e:
-                logger.error(f"🌐 {name}号网络请求异常: {e}")
+            except: pass
             return False
 
         with concurrent.futures.ThreadPoolExecutor(max_workers=4) as executor:
             executor.map(try_book, seat_list)
         
         if success_event.is_set():
-            self.notify(True, success_name[0])
-            return True
+            # 修改通知描述，包含场馆和日期
+            s_name = success_name[0]
+            desc = f"座位：{s_name}\n场馆：{hall}\n日期：{target_date}"
+            self.notify(True, seat_name=s_name, custom_msg=desc) 
+            return s_name # 返回具体座位号
         return False

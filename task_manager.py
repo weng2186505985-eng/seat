@@ -16,9 +16,7 @@ class TaskManager:
         self.user_bots = {} 
         self.running = True
         self.lock = threading.Lock()
-        
-        # --- 时钟同步配置 ---
-        self.time_offset = 0 # 本地时间与服务器时间的秒级差值 (Server - Local)
+        self.time_offset = 0 
         self.last_sync_time = 0
         
         self.seat_map = {}
@@ -33,26 +31,21 @@ class TaskManager:
         self.scheduler_thread.start()
 
     def _sync_server_time(self):
-        """同步图书馆服务器时间，获取偏差量"""
         try:
             url = "https://hdu.huitu.zhishulib.com/Seat/Index/searchSeats?LAB_JSON=1"
             start_local = time.time()
             resp = requests.head(url, timeout=5)
-            # 解析响应头中的 Date
             server_date_str = resp.headers.get('Date')
             if server_date_str:
-                # 转换 HTTP 日期格式为 timestamp
                 server_ts = datetime.datetime.strptime(server_date_str, '%a, %d %b %Y %H:%M:%S GMT').replace(
                     tzinfo=datetime.timezone.utc
                 ).timestamp()
-                # 考虑往返时延 (RTT) 的中点
                 rtt = time.time() - start_local
                 adjusted_server_ts = server_ts + (rtt / 2)
                 self.time_offset = adjusted_server_ts - time.time()
                 self.last_sync_time = time.time()
-                logger.info(f"⏰ 时钟同步成功：偏差 {self.time_offset:.2f}s (已根据网络时延微调)")
-        except Exception as e:
-            logger.warning(f"⚠️ 时钟同步失败，将继续使用本地时间: {e}")
+                logger.info(f"⏰ 时钟同步：偏差 {self.time_offset:.2f}s")
+        except: pass
 
     def load_tasks(self):
         if os.path.exists(self.tasks_file):
@@ -63,24 +56,20 @@ class TaskManager:
         return []
 
     def save_tasks(self):
-        """原子化写入：防止断电或崩溃导致的任务丢失"""
         with self.lock:
             save_data = []
             for t in self.tasks:
                 c = t.copy()
                 if 'bot_instance' in c: del c['bot_instance']
                 save_data.append(c)
-            
             tmp_file = self.tasks_file + ".tmp"
             try:
                 with open(tmp_file, "w", encoding="utf-8") as f:
                     json.dump(save_data, f, ensure_ascii=False, indent=2)
                     f.flush()
-                    os.fsync(f.fileno()) # 强制刷入磁盘硬件
-                # 原子替换：OS 级别保证要么成功，要么保持旧文件，绝不会出现中途坏档
+                    os.fsync(f.fileno())
                 os.replace(tmp_file, self.tasks_file)
-            except Exception as e:
-                logger.error(f"❌ 任务存盘失败: {e}")
+            except: pass
 
     def _get_bot(self, username):
         with self.lock:
@@ -115,7 +104,7 @@ class TaskManager:
             try:
                 start, end = map(int, s_range.split("-"))
                 for i in range(start, end + 1):
-                    name = str(i); 
+                    name = str(i)
                     if name in self.seat_map[hall]:
                         if bot and name in bot.blacklist: continue
                         raw_list.append((name, self.seat_map[hall][name]))
@@ -141,13 +130,10 @@ class TaskManager:
         self.save_tasks()
 
     def _scheduler_loop(self):
-        logger.info("🚀 终极可靠调度引擎已就绪...")
         while self.running:
-            # 每 30 分钟强制同步一次时间
             if time.time() - self.last_sync_time > 1800:
                 self._sync_server_time()
 
-            # 使用经同步修正的“服务器时间”
             now_ts = time.time() + self.time_offset
             now = datetime.datetime.fromtimestamp(now_ts)
             today_str = now.strftime("%Y-%m-%d")
@@ -202,6 +188,9 @@ class TaskManager:
                 with self.lock:
                     for t in self.tasks:
                         if t['username'] == u and t['status'] == 'warming': t['status'] = "ready"
+                # 发送预热成功通知
+                bot.notify(True, custom_title="⚔️ 预热完成", 
+                           custom_msg=f"账号 {u} Token 就绪，将在 {task['triggerTime']} 准时出击\n目标：{task['floor']} {task['seat_display']}")
             else:
                 with self.lock: task['status'] = "waiting"
             self.save_tasks()
@@ -216,19 +205,34 @@ class TaskManager:
                 "seat_list": task['seat_list'], "date_offset": task['dateOffset'],
                 "start_time": task['startTime'], "end_time": task['endTime']
             }
+            
+            # 发送冲击通知
+            target_date = (datetime.datetime.now() + datetime.timedelta(days=task['dateOffset'])).strftime("%Y-%m-%d")
+            bot.notify(True, custom_title="🚀 开始冲击", 
+                       custom_msg=f"正在对 {task['seat_display']} 发起抢座\n目标日期：{target_date}")
+            
             success = False
             for i in range(4):
-                if i > 0: time.sleep(2)
-                success = bot.snatch_action(params, skip_refresh=(skip_refresh or i > 0 or bot.is_warmed_up))
-                if success: break
+                if i > 0:
+                    time.sleep(2)
+                    # 发送重试通知
+                    bot.notify(True, custom_title=f"⚠️ 第{i}次重试", 
+                               custom_msg=f"本次未抢到，正在发起第 {i} 次重试...")
+                
+                res = bot.snatch_action(params, skip_refresh=(skip_refresh or i > 0 or bot.is_warmed_up))
+                if isinstance(res, str): # 如果返回了具体座位号
+                    success = res
+                    break
             
             with self.lock:
                 if success:
                     task['status'] = "completed"
                     task['last_run_date'] = datetime.datetime.now().strftime("%Y-%m-%d")
-                    task['preferred_seat'] = task['seat_list'][0][0]
+                    # 智能锁定：记录真实抢到的座位号
+                    task['preferred_seat'] = success
                 else:
                     task['status'] = "failed"
-                    bot.notify(False, custom_msg=f"账号：{u}\n场馆：{task['floor']}\n抢座任务已耗尽重试次数，建议手动检查。")
+                    bot.notify(False, custom_title="❌ 抢座失败",
+                               custom_msg=f"连续 3 次失败已停止\n场馆：{task['floor']}\n座位：{task['seat_display']}")
             self.save_tasks()
         threading.Thread(target=_worker, daemon=True).start()
