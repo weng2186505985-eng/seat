@@ -193,7 +193,6 @@ class TaskManager:
 
             for task in tasks_to_warmup: self._run_task_warmup(task)
             for task, skip, t_ts in tasks_to_snatch: self._run_task_snatch(task, skip, t_ts)
-            self.save_tasks()
             time.sleep(0.5)
 
     def _run_task_warmup(self, task):
@@ -210,7 +209,6 @@ class TaskManager:
                            custom_msg=f"账号 {u} Token 就绪，将在 {task['triggerTime']} 准时出击\n目标：{task['floor']} {task['seat_display']}")
             else:
                 with self.lock: task['status'] = "waiting"
-            self.save_tasks()
         threading.Thread(target=_worker, daemon=True).start()
 
     def _run_task_snatch(self, task, skip_refresh, trigger_ts):
@@ -231,12 +229,12 @@ class TaskManager:
                        custom_msg=f"正在对 {task['seat_display']} 发起抢座\n目标日期：{target_date}")
             
             success = False
-            for i in range(4):
+            for i in range(2):
                 if i > 0:
-                    time.sleep(2)
+                    time.sleep(1.5)
                     # 发送重试通知
                     bot.notify(False, custom_title=f"⚠️ 第{i}次重试", 
-                               custom_msg=f"本次未抢到，正在发起第 {i} 次重试...")
+                               custom_msg=f"第一轮未抢到，正在发起第 {i} 次重试...")
                 
                 res = bot.snatch_action(params, skip_refresh=(skip_refresh or i > 0 or bot.is_warmed_up))
                 if isinstance(res, str): # 如果返回了具体座位号
@@ -252,6 +250,6 @@ class TaskManager:
                 else:
                     task['status'] = "failed"
                     bot.notify(False, custom_title="❌ 抢座失败",
-                               custom_msg=f"连续 3 次失败已停止\n场馆：{task['floor']}\n座位：{task['seat_display']}")
+                               custom_msg=f"连续 2 轮未中已停止\n场馆：{task['floor']}\n座位：{task['seat_display']}")
             self.save_tasks()
         threading.Thread(target=_worker, daemon=True).start()
