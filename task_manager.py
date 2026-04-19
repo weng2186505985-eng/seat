@@ -72,15 +72,15 @@ class TaskManager:
             except: pass
 
     def _get_bot(self, username):
-        with self.lock:
-            if username not in self.user_bots:
-                self.user_bots[username] = UltraFastBot()
-            return self.user_bots[username]
+        if username not in self.user_bots:
+            self.user_bots[username] = UltraFastBot()
+        return self.user_bots[username]
 
     def add_task(self, data):
         task_id = str(int(time.time()))
         username = data['username']
-        bot = self._get_bot(username)
+        with self.lock:
+            bot = self._get_bot(username)
         seat_list = self._build_seat_list(data['floor'], data['seatRange'], data.get('preferred_seat', ""), bot)
         if not seat_list: return None
 
@@ -173,8 +173,9 @@ class TaskManager:
                             task['status'] = 'ready'
 
                     if diff <= 0 and task['status'] in ["waiting", "warming", "ready"]:
+                        was_ready = (task['status'] == "ready")
                         task['status'] = "snatching"
-                        tasks_to_snatch.append((task, task['status'] == "ready"))
+                        tasks_to_snatch.append((task, was_ready))
 
             for task in tasks_to_warmup: self._run_task_warmup(task)
             for task, skip in tasks_to_snatch: self._run_task_snatch(task, skip)
@@ -183,7 +184,8 @@ class TaskManager:
     def _run_task_warmup(self, task):
         def _worker():
             u = task['username']
-            bot = self._get_bot(u)
+            with self.lock:
+                bot = self._get_bot(u)
             if bot.refresh_credentials(u, task['password']):
                 with self.lock:
                     for t in self.tasks:
@@ -199,7 +201,8 @@ class TaskManager:
     def _run_task_snatch(self, task, skip_refresh):
         def _worker():
             u = task['username']
-            bot = self._get_bot(u)
+            with self.lock:
+                bot = self._get_bot(u)
             params = {
                 "username": u, "password": task['password'], "floor": task['floor'],
                 "seat_list": task['seat_list'], "date_offset": task['dateOffset'],
@@ -208,7 +211,7 @@ class TaskManager:
             
             # 发送冲击通知
             target_date = (datetime.datetime.now() + datetime.timedelta(days=task['dateOffset'])).strftime("%Y-%m-%d")
-            bot.notify(True, custom_title="🚀 开始冲击", 
+            bot.notify(False, custom_title="🚀 开始冲击", 
                        custom_msg=f"正在对 {task['seat_display']} 发起抢座\n目标日期：{target_date}")
             
             success = False
@@ -216,7 +219,7 @@ class TaskManager:
                 if i > 0:
                     time.sleep(2)
                     # 发送重试通知
-                    bot.notify(True, custom_title=f"⚠️ 第{i}次重试", 
+                    bot.notify(False, custom_title=f"⚠️ 第{i}次重试", 
                                custom_msg=f"本次未抢到，正在发起第 {i} 次重试...")
                 
                 res = bot.snatch_action(params, skip_refresh=(skip_refresh or i > 0 or bot.is_warmed_up))

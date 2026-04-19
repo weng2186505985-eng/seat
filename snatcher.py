@@ -85,7 +85,7 @@ class UltraFastBot:
             return False
 
     def snatch_action(self, task_params, skip_refresh=False):
-        if (skip_refresh or not self.api_token) and not self.api_token:
+        if not skip_refresh or not self.api_token:
             if not self.refresh_credentials(task_params['username'], task_params['password']):
                 return False
 
