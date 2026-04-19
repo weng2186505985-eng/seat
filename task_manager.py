@@ -170,7 +170,7 @@ class TaskManager:
 
             for task in tasks_to_warmup: self._run_task_warmup(task)
             for task, skip in tasks_to_snatch: self._run_task_snatch(task, skip)
-            time.sleep(0.1)
+            time.sleep(0.5)
 
     def _run_task_warmup(self, task):
         def _worker():
