@@ -17,18 +17,23 @@ class UltraFastBot:
         self.user_id = ""
         self.current_cookies = config.COOKIE
         self.is_warmed_up = False
-        self.blacklist = set() # 记录有特殊限制的座位
+        self.blacklist = set() 
         self.ua_list = [
             "Mozilla/5.0 (iPhone; CPU iPhone OS 16_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.0 Mobile/15E148 Safari/604.1",
             "Mozilla/5.0 (Linux; Android 13; Pixel 7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/116.0.0.0 Mobile Safari/537.36",
             "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1"
         ]
 
-    def notify(self, success, seat_name=""):
+    def notify(self, success, seat_name="", custom_msg=""):
+        """Server酱推送"""
         if not config.SCKEY: return
         url = f"https://sctapi.ftqq.com/{config.SCKEY}.send"
-        title = "🎉 HDU 抢座成功！" if success else "❌ HDU 抢座失败"
-        content = f"座位：{seat_name}\n日期：{datetime.datetime.now().strftime('%Y-%m-%d')}" if success else "本次尝试未抢到目标座位。"
+        title = "🎉 HDU 抢座成功！" if success else "❌ HDU 抢座最终失败"
+        if success:
+            content = f"座位：{seat_name}\n日期：{datetime.datetime.now().strftime('%Y-%m-%d')}"
+        else:
+            content = custom_msg if custom_msg else "连续多次尝试均未抢到目标座位。"
+        
         try:
             requests.post(url, data={"title": title, "desp": content}, timeout=5)
         except: pass
@@ -39,7 +44,6 @@ class UltraFastBot:
             with sync_playwright() as p:
                 iphone = p.devices['iPhone 14']
                 browser = p.chromium.launch(headless=True)
-                # 修复：不再传 user_agent，避免与 iphone 内置 UA 冲突
                 context = browser.new_context(**iphone)
                 page = context.new_page()
                 
@@ -78,13 +82,10 @@ class UltraFastBot:
             return False
 
     def snatch_action(self, task_params, skip_refresh=False):
-        # 凭证兜底检查
         if (skip_refresh or not self.api_token) and not self.api_token:
-            logger.warning("⚠️ 发现 Token 为空，强制重新登录同步...")
             if not self.refresh_credentials(task_params['username'], task_params['password']):
                 return False
 
-        logger.info("⏳ 正在进行触发前抖动...")
         time.sleep(random.uniform(0.3, 2.0))
 
         hall = task_params['floor']
@@ -109,10 +110,7 @@ class UltraFastBot:
 
         def try_book(item, is_retry=False):
             if success_flag[0]: return
-            
-            # 线程错峰：0.5s - 1.5s
-            if not is_retry:
-                time.sleep(random.uniform(0.5, 1.5))
+            if not is_retry: time.sleep(random.uniform(0.5, 1.5))
             
             name, s_id = item
             if name in self.blacklist: return
@@ -124,27 +122,21 @@ class UltraFastBot:
                 msg = res_json.get('msg') or res_json.get('message') or str(res_json)
                 
                 if "成功" in msg:
-                    logger.info(f"🎊 【{name}号】预约成功！")
                     success_flag[0] = True
                     success_name[0] = name
                     return True
-                elif "频繁" in msg and not is_retry:
-                    logger.warning(f"⏳ {name}号请求过快，2秒后自动重试一次...")
+                elif ("频繁" in msg or "太快" in msg) and not is_retry:
                     time.sleep(2)
                     return try_book(item, is_retry=True)
                 elif "必须在预约人列表" in msg:
-                    logger.error(f"🚫 {name}号疑似为特权白名单座位，已加入本地黑名单。")
                     self.blacklist.add(name)
-                else:
-                    logger.warning(f"💡 {name}号: {msg}")
-            except Exception as e:
-                logger.error(f"⚠️ {name}号请求异常: {e}")
+            except: pass
             return False
 
         with concurrent.futures.ThreadPoolExecutor(max_workers=4) as executor:
             executor.map(try_book, seat_list)
         
         if success_flag[0]:
-            self.notify(True, success_name[0])
+            self.notify(True, success_name[0]) # 成功由 snatcher 发通知
             return True
         return False

@@ -29,23 +29,24 @@
         .task-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px; }
         
         /* 状态颜色 */
-        .badge { font-size: 0.7rem; padding: 2px 8px; border-radius: 5px; font-weight: 600; }
-        .badge-waiting { background: #6366f1; color: white; }
-        .badge-warming { background: #f59e0b; color: white; }
-        .badge-ready { background: #3b82f6; color: white; }
-        .badge-snatching { background: #ec4899; color: white; }
-        .badge-completed { background: #4ade80; color: white; }
-        .badge-failed { background: #f87171; color: white; }
+        .badge { font-size: 0.7rem; padding: 2px 8px; border-radius: 5px; font-weight: 600; color: white; }
+        .badge-waiting { background: #6366f1; }
+        .badge-warming { background: #f59e0b; }
+        .badge-ready { background: #3b82f6; }
+        .badge-snatching { background: #ec4899; }
+        .badge-completed { background: #4ade80; }
+        .badge-failed { background: #f87171; }
 
         .task-delete { color: #f87171; cursor: pointer; font-size: 0.8rem; border: 1px solid #f87171; padding: 2px 6px; border-radius: 4px; }
 
-        .terminal { background: #000; border-radius: 15px; padding: 15px; font-family: monospace; font-size: 0.8rem; height: 280px; overflow-y: auto; margin-top: 20px; border: 1px solid #334155; }
+        .terminal { background: #000; border-radius: 15px; padding: 15px; font-family: monospace; font-size: 0.8rem; height: 320px; overflow-y: auto; margin-top: 20px; border: 1px solid #334155; }
         .log-line { margin-bottom: 4px; }
         .log-time { color: #64748b; }
         .log-info { color: #fff; }
         .log-success { color: #4ade80; }
         .log-error { color: #f87171; }
         .log-warn { color: #fbbf24; }
+        .sub-text { font-size: 0.7rem; color: #64748b; text-align: center; margin-top: 5px; display: block; }
     </style>
 </head>
 <body>
@@ -79,8 +80,9 @@
                 </div>
             </div>
             
-            <button class="btn btn-add" onclick="addTask()">加入任务清单</button>
+            <button class="btn btn-add" id="btnAdd" onclick="addTask()">加入任务清单</button>
             <button class="btn btn-quick" onclick="addQuickTask()">📌 添加每日固定任务</button>
+            <span class="sub-text">使用上方账号，每天20:00抢后天四楼17-58号座位</span>
             <button class="btn btn-now" id="btnNow" onclick="bookNow()">立即强制捡漏</button>
             
             <div class="terminal" id="logContainer"></div>
@@ -119,22 +121,34 @@
                     <div class="task-header">
                         <div>
                             <span class="badge badge-${t.status.toLowerCase()}">${t.status.toUpperCase()}</span>
-                            ${t.recurring ? '<span title="每日循环" style="margin-left:5px">🔁</span>' : ''}
+                            ${t.recurring ? ' 🔁' : ''}
                         </div>
                         <span class="task-delete" onclick="deleteTask('${t.id}')">删除</span>
                     </div>
                     <div class="task-info">
                         📍 场馆：${t.floor}<br>
-                        🪑 座位：${t.seat_display}<br>
-                        ⏰ 触发：<b style="color:var(--secondary)">${t.triggerTime}</b> | 预约：${t.startTime}-${t.endTime}<br>
-                        📅 偏移：${t.dateOffset == 0 ? '今天' : t.dateOffset == 1 ? '明天' : '后天'}
+                        🪑 座位：${t.seat_display || t.seats || '未知'}<br>
+                        ⏱ 时间：${t.startTime || '09:00'} - ${t.endTime || '22:00'}<br>
+                        ⏰ 触发：<b style="color:var(--secondary)">${t.triggerTime}</b> | 预约：${t.dateOffset == 0 ? '今天' : t.dateOffset == 1 ? '明天' : '后天'}
                         ${t.preferred_seat ? `<br><span style="color:#4ade80; font-size:0.75rem">✨ 已锁定首选：${t.preferred_seat}号</span>` : ''}
                     </div>
                 </div>
             `).join('');
         }
 
+        function validateInputs() {
+            const u = document.getElementById('username').value;
+            const p = document.getElementById('password').value;
+            const s = document.getElementById('seatRange').value;
+            if(!u || !p || !s) {
+                alert("请填写完整：学号、密码和座位范围！");
+                return false;
+            }
+            return true;
+        }
+
         async function addTask() {
+            if(!validateInputs()) return;
             const data = {
                 username: document.getElementById('username').value,
                 password: document.getElementById('password').value,
@@ -146,17 +160,22 @@
                 endTime: "22:00",
                 recurring: false
             };
-            const resp = await fetch('/add_task', {
+            await fetch('/add_task', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify(data)
             });
-            const res = await resp.json();
-            if(res.status === 'error') alert(res.message);
+            
+            const btn = document.getElementById('btnAdd');
+            const oldText = btn.innerText;
+            btn.innerText = "✅ 已添加";
+            setTimeout(() => btn.innerText = oldText, 1500);
+            
             fetchTasks();
         }
 
         async function addQuickTask() {
+            if(!validateInputs()) return;
             const data = {
                 username: document.getElementById('username').value,
                 password: document.getElementById('password').value,
@@ -168,7 +187,7 @@
                 triggerTime: "20:00:00",
                 recurring: true
             };
-            const resp = await fetch('/add_task', {
+            await fetch('/add_task', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify(data)
@@ -182,6 +201,7 @@
         }
 
         async function bookNow() {
+            if(!validateInputs()) return;
             const btn = document.getElementById('btnNow');
             btn.disabled = true;
             setTimeout(() => btn.disabled = false, 5000);
@@ -209,9 +229,18 @@
                 const logs = await resp.json();
                 const container = document.getElementById('logContainer');
                 logs.forEach(l => {
+                    let msg = l.msg;
+                    // 处理 JSON 日志，只提取 MESSAGE
+                    if (msg.trim().startsWith('{')) {
+                        try {
+                            const obj = JSON.parse(msg);
+                            msg = obj.MESSAGE || obj.msg || msg;
+                        } catch(e) {}
+                    }
+                    
                     const div = document.createElement('div');
                     div.className = 'log-line';
-                    div.innerHTML = `<span class="log-time">[${l.time}]</span> <span class="log-${l.level}">${l.msg}</span>`;
+                    div.innerHTML = `<span class="log-time">[${l.time}]</span> <span class="log-${l.level}">${msg}</span>`;
                     container.appendChild(div);
                 });
                 if(logs.length > 0) container.scrollTop = container.scrollHeight;
