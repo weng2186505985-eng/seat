@@ -20,15 +20,26 @@
 
         .btn { border: none; border-radius: 10px; padding: 12px; font-weight: 600; cursor: pointer; transition: 0.3s; width: 100%; margin-top: 10px; display: block; text-align: center; text-decoration: none; }
         .btn-add { background: linear-gradient(135deg, var(--primary), var(--secondary)); color: white; }
+        .btn-quick { background: rgba(99, 102, 241, 0.2); color: #818cf8; border: 1px solid rgba(99, 102, 241, 0.3); }
         .btn-now { background: rgba(255,255,255,0.05); color: white; border: 1px solid rgba(255,255,255,0.1); }
+        .btn:disabled { opacity: 0.5; cursor: not-allowed; }
         
         .task-list { display: grid; grid-template-columns: 1fr; gap: 15px; }
         .task-card { background: rgba(255,255,255,0.03); border-radius: 15px; padding: 15px; border: 1px solid rgba(255,255,255,0.05); position: relative; }
         .task-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px; }
-        .task-badge { font-size: 0.7rem; padding: 2px 8px; border-radius: 5px; background: var(--primary); }
+        
+        /* 状态颜色 */
+        .badge { font-size: 0.7rem; padding: 2px 8px; border-radius: 5px; font-weight: 600; }
+        .badge-waiting { background: #6366f1; color: white; }
+        .badge-warming { background: #f59e0b; color: white; }
+        .badge-ready { background: #3b82f6; color: white; }
+        .badge-snatching { background: #ec4899; color: white; }
+        .badge-completed { background: #4ade80; color: white; }
+        .badge-failed { background: #f87171; color: white; }
+
         .task-delete { color: #f87171; cursor: pointer; font-size: 0.8rem; border: 1px solid #f87171; padding: 2px 6px; border-radius: 4px; }
 
-        .terminal { background: #000; border-radius: 15px; padding: 15px; font-family: monospace; font-size: 0.8rem; height: 250px; overflow-y: auto; margin-top: 20px; border: 1px solid #334155; }
+        .terminal { background: #000; border-radius: 15px; padding: 15px; font-family: monospace; font-size: 0.8rem; height: 280px; overflow-y: auto; margin-top: 20px; border: 1px solid #334155; }
         .log-line { margin-bottom: 4px; }
         .log-time { color: #64748b; }
         .log-info { color: #fff; }
@@ -40,7 +51,7 @@
 <body>
     <div class="container">
         <div class="panel">
-            <h3 style="margin:0">添加任务</h3>
+            <h3 style="margin:0">任务管理</h3>
             <div class="section-title">通行证</div>
             <input type="text" id="username" placeholder="学号">
             <input type="password" id="password" placeholder="密码">
@@ -69,7 +80,8 @@
             </div>
             
             <button class="btn btn-add" onclick="addTask()">加入任务清单</button>
-            <button class="btn btn-now" onclick="bookNow()">立即强制捡漏</button>
+            <button class="btn btn-quick" onclick="addQuickTask()">📌 添加每日固定任务</button>
+            <button class="btn btn-now" id="btnNow" onclick="bookNow()">立即强制捡漏</button>
             
             <div class="terminal" id="logContainer"></div>
         </div>
@@ -105,14 +117,18 @@
             container.innerHTML = tasks.map(t => `
                 <div class="task-card">
                     <div class="task-header">
-                        <span class="task-badge">${t.status.toUpperCase()}</span>
+                        <div>
+                            <span class="badge badge-${t.status.toLowerCase()}">${t.status.toUpperCase()}</span>
+                            ${t.recurring ? '<span title="每日循环" style="margin-left:5px">🔁</span>' : ''}
+                        </div>
                         <span class="task-delete" onclick="deleteTask('${t.id}')">删除</span>
                     </div>
                     <div class="task-info">
                         📍 场馆：${t.floor}<br>
-                        🪑 座位：${t.seats}<br>
-                        ⏰ 触发时间：<b style="color:var(--secondary)">${t.triggerTime}</b><br>
-                        📅 预约：${t.dateOffset == 0 ? '今天' : t.dateOffset == 1 ? '明天' : '后天'}
+                        🪑 座位：${t.seat_display}<br>
+                        ⏰ 触发：<b style="color:var(--secondary)">${t.triggerTime}</b> | 预约：${t.startTime}-${t.endTime}<br>
+                        📅 偏移：${t.dateOffset == 0 ? '今天' : t.dateOffset == 1 ? '明天' : '后天'}
+                        ${t.preferred_seat ? `<br><span style="color:#4ade80; font-size:0.75rem">✨ 已锁定首选：${t.preferred_seat}号</span>` : ''}
                     </div>
                 </div>
             `).join('');
@@ -127,9 +143,32 @@
                 dateOffset: parseInt(document.getElementById('dateOffset').value),
                 triggerTime: document.getElementById('triggerTime').value,
                 startTime: "09:00",
-                endTime: "22:00"
+                endTime: "22:00",
+                recurring: false
             };
-            await fetch('/add_task', {
+            const resp = await fetch('/add_task', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(data)
+            });
+            const res = await resp.json();
+            if(res.status === 'error') alert(res.message);
+            fetchTasks();
+        }
+
+        async function addQuickTask() {
+            const data = {
+                username: document.getElementById('username').value,
+                password: document.getElementById('password').value,
+                floor: "宋韵云图（四楼）",
+                seatRange: "17-58",
+                startTime: "09:00",
+                endTime: "22:00",
+                dateOffset: 2,
+                triggerTime: "20:00:00",
+                recurring: true
+            };
+            const resp = await fetch('/add_task', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify(data)
@@ -143,6 +182,10 @@
         }
 
         async function bookNow() {
+            const btn = document.getElementById('btnNow');
+            btn.disabled = true;
+            setTimeout(() => btn.disabled = false, 5000);
+
             const data = {
                 username: document.getElementById('username').value,
                 password: document.getElementById('password').value,
