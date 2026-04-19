@@ -120,46 +120,51 @@ class UltraFastBot:
         success_name = [""]
 
         def try_book(item, is_retry=False):
-            if success_event.is_set(): return
-            
-            # 动态生成请求头，防止被识别为同一机器人
-            current_headers = {
-                "api-token": self.api_token,
-                "Cookie": self.current_cookies,
-                "User-Agent": random.choice(self.ua_list),
-                "Referer": "https://hdu.huitu.zhishulib.com/",
-                "X-Requested-With": "XMLHttpRequest"
-            }
-
-            if not is_retry: 
-                # 微小随机抖动 (10ms-50ms)，模拟人类点击的自然波动
-                time.sleep(random.uniform(0.01, 0.05))
-            
-            name, s_id = item
-            if name in self.blacklist: return
-
-            data = {"beginTime": start_ts, "duration": dur_sec, "seats[0]": s_id, "seatBookers[0]": self.user_id}
             try:
-                resp = requests.post(url, data=data, headers=current_headers, timeout=10)
-                try:
-                    res_json = resp.json()
-                except: return False
-
-                msg = res_json.get('msg') or res_json.get('message') or str(res_json)
+                if success_event.is_set(): return
                 
-                if "成功" in msg:
-                    logger.info(f"🎊 【{name}号】预约成功！")
-                    success_name[0] = name
-                    success_event.set()
-                    return True
-                elif ("频繁" in msg or "太快" in msg) and not is_retry:
-                    time.sleep(1.5)
-                    return try_book(item, is_retry=True)
-                elif any(kw in msg for kw in ["必须在预约人列表", "已被预约", "已被占用", "该时间段不可预约", "已经预约"]):
-                    # 只要明确座位不可用，立刻熔断拉黑，不再尝试
-                    self.blacklist.add(name)
-            except: pass
-            return False
+                # 动态生成请求头，防止被识别为同一机器人
+                current_headers = {
+                    "api-token": self.api_token,
+                    "Cookie": self.current_cookies,
+                    "User-Agent": random.choice(self.ua_list),
+                    "Referer": "https://hdu.huitu.zhishulib.com/",
+                    "X-Requested-With": "XMLHttpRequest"
+                }
+
+                if not is_retry: 
+                    # 微小随机抖动 (10ms-50ms)，模拟人类点击的自然波动
+                    time.sleep(random.uniform(0.01, 0.05))
+                
+                name, s_id = item
+                if name in self.blacklist: return
+
+                data = {"beginTime": start_ts, "duration": dur_sec, "seats[0]": s_id, "seatBookers[0]": self.user_id}
+                try:
+                    # 快速失败策略：连接 1.5s，读取 3.0s，避免高峰期挂死线程
+                    resp = requests.post(url, data=data, headers=current_headers, timeout=(1.5, 3.0))
+                    try:
+                        res_json = resp.json()
+                    except: return False
+
+                    msg = res_json.get('msg') or res_json.get('message') or str(res_json)
+                    
+                    if "成功" in msg:
+                        logger.info(f"🎊 【{name}号】预约成功！")
+                        success_name[0] = name
+                        success_event.set()
+                        return True
+                    elif ("频繁" in msg or "太快" in msg) and not is_retry:
+                        time.sleep(1.5)
+                        return try_book(item, is_retry=True)
+                    elif any(kw in msg for kw in ["必须在预约人列表", "已被预约", "已被占用", "该时间段不可预约", "已经预约"]):
+                        # 只要明确座位不可用，立刻熔断拉黑，不再尝试
+                        self.blacklist.add(name)
+                except: pass
+                return False
+            except Exception as e:
+                logger.error(f"⚠️ 线程执行异常: {e}")
+                return False
 
         with concurrent.futures.ThreadPoolExecutor(max_workers=4) as executor:
             executor.map(try_book, seat_list)

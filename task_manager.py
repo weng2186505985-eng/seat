@@ -33,21 +33,32 @@ class TaskManager:
 
     def _sync_server_time(self):
         try:
+            # 放弃秒级精度的 Header Date，尝试获取带有毫秒时间戳的业务 API
             url = "https://hdu.huitu.zhishulib.com/Seat/Index/searchSeats?LAB_JSON=1"
             start_local = time.time()
-            resp = requests.head(url, timeout=5)
-            server_date_str = resp.headers.get('Date')
-            if server_date_str:
-                server_ts = datetime.datetime.strptime(server_date_str, '%a, %d %b %Y %H:%M:%S GMT').replace(
-                    tzinfo=datetime.timezone.utc
-                ).timestamp()
-                rtt = time.time() - start_local
-                self.avg_rtt = rtt
+            resp = requests.get(url, timeout=5)
+            rtt = time.time() - start_local
+            self.avg_rtt = rtt
+            
+            data = resp.json()
+            # 尝试从响应 JSON 中提取服务器毫秒时间戳 (Huitu 系统常见字段)
+            st = data.get('serverTime') or data.get('now') or data.get('time')
+            if st:
+                # 如果 st 是字符串或整数毫秒
+                server_ts = float(st) / 1000.0 if float(st) > 2000000000 else float(st)
+                # 考虑 RTT 补偿
                 adjusted_server_ts = server_ts + (rtt / 2)
                 self.time_offset = adjusted_server_ts - time.time()
-                self.last_sync_time = time.time()
-                logger.info(f"⏰ 时钟同步：偏差 {self.time_offset:.2f}s, RTT {self.avg_rtt*1000:.1f}ms")
-        except: pass
+                logger.info(f"⏰ 高精度时钟同步：偏差 {self.time_offset*1000:.1f}ms, RTT {rtt*1000:.1f}ms")
+            else:
+                # 如果 API 没带时间戳，宁愿相信本地 NTP 同步的时钟，偏差设为 0
+                self.time_offset = 0
+                logger.info(f"⏰ 未获取到服务器毫秒时钟，信任本地 NTP 时钟 (RTT {rtt*1000:.1f}ms)")
+            
+            self.last_sync_time = time.time()
+        except Exception as e:
+            self.time_offset = 0
+            logger.warning(f"⚠️ 时钟同步失败，使用本地时间: {e}")
 
     def load_tasks(self):
         if os.path.exists(self.tasks_file):
