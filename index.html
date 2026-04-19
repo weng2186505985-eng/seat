@@ -1,0 +1,182 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>HDU 任务制抢座助手</title>
+    <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;600&display=swap" rel="stylesheet">
+    <style>
+        :root { --primary: #6366f1; --secondary: #a855f7; --bg: #0f172a; --card: rgba(30, 41, 59, 0.7); --text: #f8fafc; }
+        * { box-sizing: border-box; font-family: 'Outfit', sans-serif; }
+        body { background: radial-gradient(circle at top right, #1e1b4b, var(--bg)); color: var(--text); margin: 0; min-height: 100vh; padding: 20px; display: flex; justify-content: center; align-items: flex-start; }
+        
+        .container { width: 100%; max-width: 1200px; display: grid; grid-template-columns: 350px 1fr; gap: 20px; }
+        
+        .panel { background: var(--card); border-radius: 20px; padding: 25px; border: 1px solid rgba(255,255,255,0.1); backdrop-filter: blur(10px); }
+        .section-title { font-size: 0.75rem; text-transform: uppercase; color: var(--primary); margin: 15px 0 10px; letter-spacing: 1px; }
+        
+        input, select { width: 100%; background: rgba(0,0,0,0.3); border: 1px solid rgba(255,255,255,0.1); border-radius: 10px; padding: 10px; color: white; margin-bottom: 10px; }
+        label { font-size: 0.7rem; opacity: 0.5; margin-bottom: 5px; display: block; }
+
+        .btn { border: none; border-radius: 10px; padding: 12px; font-weight: 600; cursor: pointer; transition: 0.3s; width: 100%; margin-top: 10px; display: block; text-align: center; text-decoration: none; }
+        .btn-add { background: linear-gradient(135deg, var(--primary), var(--secondary)); color: white; }
+        .btn-now { background: rgba(255,255,255,0.05); color: white; border: 1px solid rgba(255,255,255,0.1); }
+        
+        .task-list { display: grid; grid-template-columns: 1fr; gap: 15px; }
+        .task-card { background: rgba(255,255,255,0.03); border-radius: 15px; padding: 15px; border: 1px solid rgba(255,255,255,0.05); position: relative; }
+        .task-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px; }
+        .task-badge { font-size: 0.7rem; padding: 2px 8px; border-radius: 5px; background: var(--primary); }
+        .task-delete { color: #f87171; cursor: pointer; font-size: 0.8rem; border: 1px solid #f87171; padding: 2px 6px; border-radius: 4px; }
+
+        .terminal { background: #000; border-radius: 15px; padding: 15px; font-family: monospace; font-size: 0.8rem; height: 250px; overflow-y: auto; margin-top: 20px; border: 1px solid #334155; }
+        .log-line { margin-bottom: 4px; }
+        .log-time { color: #64748b; }
+        .log-info { color: #fff; }
+        .log-success { color: #4ade80; }
+        .log-error { color: #f87171; }
+        .log-warn { color: #fbbf24; }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="panel">
+            <h3 style="margin:0">添加任务</h3>
+            <div class="section-title">通行证</div>
+            <input type="text" id="username" placeholder="学号">
+            <input type="password" id="password" placeholder="密码">
+            
+            <div class="section-title">抢占目标</div>
+            <select id="floor">
+                <option value="宋韵云图（四楼）">宋韵云图（四楼）</option>
+                <option value="格物E堂（二楼东）">格物E堂（二楼东）</option>
+            </select>
+            <input type="text" id="seatRange" placeholder="座位范围 (如 17-58)">
+            
+            <div class="section-title">计划</div>
+            <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 10px;">
+                <div>
+                    <label>预约日期</label>
+                    <select id="dateOffset">
+                        <option value="0">今天</option>
+                        <option value="1">明天</option>
+                        <option value="2" selected>后天</option>
+                    </select>
+                </div>
+                <div>
+                    <label>触发时刻</label>
+                    <input type="text" id="triggerTime" value="20:00:00">
+                </div>
+            </div>
+            
+            <button class="btn btn-add" onclick="addTask()">加入任务清单</button>
+            <button class="btn btn-now" onclick="bookNow()">立即强制捡漏</button>
+            
+            <div class="terminal" id="logContainer"></div>
+        </div>
+
+        <div class="panel">
+            <h3 style="margin:0 0 20px 0">当前任务看板</h3>
+            <div class="task-list" id="taskList"></div>
+        </div>
+    </div>
+
+    <script>
+        // 缓存
+        ['username', 'password', 'seatRange', 'triggerTime'].forEach(id => {
+            const saved = localStorage.getItem('hdu_' + id);
+            if(saved) document.getElementById(id).value = saved;
+            document.getElementById(id).oninput = () => localStorage.setItem('hdu_' + id, document.getElementById(id).value);
+        });
+
+        async function fetchTasks() {
+            try {
+                const resp = await fetch('/tasks');
+                const tasks = await resp.json();
+                renderTasks(tasks);
+            } catch(e) {}
+        }
+
+        function renderTasks(tasks) {
+            const container = document.getElementById('taskList');
+            if(tasks.length === 0) {
+                container.innerHTML = '<div style="opacity:0.3; text-align:center; padding:50px;">暂无预约任务</div>';
+                return;
+            }
+            container.innerHTML = tasks.map(t => `
+                <div class="task-card">
+                    <div class="task-header">
+                        <span class="task-badge">${t.status.toUpperCase()}</span>
+                        <span class="task-delete" onclick="deleteTask('${t.id}')">删除</span>
+                    </div>
+                    <div class="task-info">
+                        📍 场馆：${t.floor}<br>
+                        🪑 座位：${t.seats}<br>
+                        ⏰ 触发时间：<b style="color:var(--secondary)">${t.triggerTime}</b><br>
+                        📅 预约：${t.dateOffset == 0 ? '今天' : t.dateOffset == 1 ? '明天' : '后天'}
+                    </div>
+                </div>
+            `).join('');
+        }
+
+        async function addTask() {
+            const data = {
+                username: document.getElementById('username').value,
+                password: document.getElementById('password').value,
+                floor: document.getElementById('floor').value,
+                seatRange: document.getElementById('seatRange').value,
+                dateOffset: parseInt(document.getElementById('dateOffset').value),
+                triggerTime: document.getElementById('triggerTime').value,
+                startTime: "09:00",
+                endTime: "22:00"
+            };
+            await fetch('/add_task', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(data)
+            });
+            fetchTasks();
+        }
+
+        async function deleteTask(id) {
+            await fetch(`/delete_task/${id}`, { method: 'POST' });
+            fetchTasks();
+        }
+
+        async function bookNow() {
+            const data = {
+                username: document.getElementById('username').value,
+                password: document.getElementById('password').value,
+                floor: document.getElementById('floor').value,
+                seatRange: document.getElementById('seatRange').value,
+                dateOffset: parseInt(document.getElementById('dateOffset').value),
+                triggerTime: document.getElementById('triggerTime').value,
+                startTime: "09:00",
+                endTime: "22:00"
+            };
+            await fetch('/book_now', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(data)
+            });
+        }
+
+        setInterval(async () => {
+            try {
+                const resp = await fetch('/get_logs');
+                const logs = await resp.json();
+                const container = document.getElementById('logContainer');
+                logs.forEach(l => {
+                    const div = document.createElement('div');
+                    div.className = 'log-line';
+                    div.innerHTML = `<span class="log-time">[${l.time}]</span> <span class="log-${l.level}">${l.msg}</span>`;
+                    container.appendChild(div);
+                });
+                if(logs.length > 0) container.scrollTop = container.scrollHeight;
+            } catch(e) {}
+        }, 1000);
+
+        setInterval(fetchTasks, 3000);
+        fetchTasks();
+    </script>
+</body>
+</html>

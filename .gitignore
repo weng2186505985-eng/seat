@@ -1,0 +1,32 @@
+# --- 隐私敏感文件 (必须忽略) ---
+config.py
+
+# --- 本地数据库与缓存 ---
+tasks.json
+seat_map.json
+debug_seats.json
+last_payload.json
+
+# --- 调试截图 ---
+*.png
+*.jpg
+
+# --- Python 运行缓存 ---
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+env/
+venv/
+.venv/
+
+# --- IDE 配置 ---
+.vscode/
+.idea/
+*.swp
+
+# --- 测试脚本 (可选忽略) ---
+test_refresh.py
+test_booking.py
+test_api.py
