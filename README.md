@@ -59,7 +59,7 @@ npm install pm2 -g
 ### 2. 启动服务
 使用 PM2 启动 `gui_server.py`：
 ```bash
-pm2 start gui_server.py --name hdu-seat --interpreter python3
+pm2 start gui_server.py --name hdu-seat --interpreter python
 ```
 *注意：在 Windows 上可能需要指定 python 的完整路径，或者直接使用 `python`（取决于你的环境变量）。*
 

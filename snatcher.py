@@ -89,7 +89,20 @@ class UltraFastBot:
             if not self.refresh_credentials(task_params['username'], task_params['password']):
                 return False
 
-        time.sleep(random.uniform(0.3, 2.0))
+        # 提前打靶逻辑
+        trigger_ts = task_params.get('trigger_ts')
+        if trigger_ts:
+            rtt = task_params.get('rtt', 0.05)
+            offset = task_params.get('time_offset', 0)
+            # 目标本地时间 = 目标服务器时间 - 偏差 - (RTT/2)
+            target_local = trigger_ts - offset - (rtt / 2)
+            # 留一点点余量给后续的微小抖动
+            wait_time = target_local - time.time() - 0.01 
+            if wait_time > 0:
+                logger.info(f"⏳ 正在精确等待打靶时刻... (预估等待 {wait_time:.3f}s)")
+                time.sleep(wait_time)
+        else:
+            time.sleep(random.uniform(0.1, 0.5))
 
         hall = task_params['floor']
         seat_list = task_params['seat_list']
@@ -98,13 +111,9 @@ class UltraFastBot:
         end_ts = int(datetime.datetime.strptime(f"{target_date} {task_params['end_time']}", "%Y-%m-%d %H:%M").timestamp())
         dur_sec = end_ts - start_ts
         
-        headers = {
-            "api-token": self.api_token,
-            "Cookie": self.current_cookies,
-            "User-Agent": random.choice(self.ua_list),
-            "Referer": "https://hdu.huitu.zhishulib.com/"
-        }
         url = "https://hdu.huitu.zhishulib.com/Seat/Index/bookSeats?LAB_JSON=1"
+        random.shuffle(seat_list) # 随机化座位顺序
+
 
         import concurrent.futures
         success_event = threading.Event()
@@ -112,14 +121,26 @@ class UltraFastBot:
 
         def try_book(item, is_retry=False):
             if success_event.is_set(): return
-            if not is_retry: time.sleep(random.uniform(0.5, 1.5))
+            
+            # 动态生成请求头，防止被识别为同一机器人
+            current_headers = {
+                "api-token": self.api_token,
+                "Cookie": self.current_cookies,
+                "User-Agent": random.choice(self.ua_list),
+                "Referer": "https://hdu.huitu.zhishulib.com/",
+                "X-Requested-With": "XMLHttpRequest"
+            }
+
+            if not is_retry: 
+                # 微小随机抖动 (10ms-50ms)，模拟人类点击的自然波动
+                time.sleep(random.uniform(0.01, 0.05))
             
             name, s_id = item
             if name in self.blacklist: return
 
             data = {"beginTime": start_ts, "duration": dur_sec, "seats[0]": s_id, "seatBookers[0]": self.user_id}
             try:
-                resp = requests.post(url, data=data, headers=headers, timeout=10)
+                resp = requests.post(url, data=data, headers=current_headers, timeout=10)
                 try:
                     res_json = resp.json()
                 except: return False
@@ -132,9 +153,10 @@ class UltraFastBot:
                     success_event.set()
                     return True
                 elif ("频繁" in msg or "太快" in msg) and not is_retry:
-                    time.sleep(2)
+                    time.sleep(1.5)
                     return try_book(item, is_retry=True)
-                elif "必须在预约人列表" in msg:
+                elif any(kw in msg for kw in ["必须在预约人列表", "已被预约", "已被占用", "该时间段不可预约", "已经预约"]):
+                    # 只要明确座位不可用，立刻熔断拉黑，不再尝试
                     self.blacklist.add(name)
             except: pass
             return False

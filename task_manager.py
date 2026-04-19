@@ -17,6 +17,7 @@ class TaskManager:
         self.running = True
         self.lock = threading.Lock()
         self.time_offset = 0 
+        self.avg_rtt = 0.05 # 默认假设 50ms
         self.last_sync_time = 0
         
         self.seat_map = {}
@@ -41,10 +42,11 @@ class TaskManager:
                     tzinfo=datetime.timezone.utc
                 ).timestamp()
                 rtt = time.time() - start_local
+                self.avg_rtt = rtt
                 adjusted_server_ts = server_ts + (rtt / 2)
                 self.time_offset = adjusted_server_ts - time.time()
                 self.last_sync_time = time.time()
-                logger.info(f"⏰ 时钟同步：偏差 {self.time_offset:.2f}s")
+                logger.info(f"⏰ 时钟同步：偏差 {self.time_offset:.2f}s, RTT {self.avg_rtt*1000:.1f}ms")
         except: pass
 
     def load_tasks(self):
@@ -172,13 +174,14 @@ class TaskManager:
                         if any(t['username'] == task['username'] and t['status'] == 'ready' for t in self.tasks):
                             task['status'] = 'ready'
 
-                    if diff <= 0 and task['status'] in ["waiting", "warming", "ready"]:
+                    if diff <= 2 and task['status'] in ["waiting", "warming", "ready"]:
+                        trigger_ts = t_time.timestamp()
                         was_ready = (task['status'] == "ready")
                         task['status'] = "snatching"
-                        tasks_to_snatch.append((task, was_ready))
+                        tasks_to_snatch.append((task, was_ready, trigger_ts))
 
             for task in tasks_to_warmup: self._run_task_warmup(task)
-            for task, skip in tasks_to_snatch: self._run_task_snatch(task, skip)
+            for task, skip, t_ts in tasks_to_snatch: self._run_task_snatch(task, skip, t_ts)
             self.save_tasks()
             time.sleep(0.5)
 
@@ -199,7 +202,7 @@ class TaskManager:
             self.save_tasks()
         threading.Thread(target=_worker, daemon=True).start()
 
-    def _run_task_snatch(self, task, skip_refresh):
+    def _run_task_snatch(self, task, skip_refresh, trigger_ts):
         def _worker():
             u = task['username']
             with self.lock:
@@ -207,7 +210,8 @@ class TaskManager:
             params = {
                 "username": u, "password": task['password'], "floor": task['floor'],
                 "seat_list": task['seat_list'], "date_offset": task['dateOffset'],
-                "start_time": task['startTime'], "end_time": task['endTime']
+                "start_time": task['startTime'], "end_time": task['endTime'],
+                "trigger_ts": trigger_ts, "rtt": self.avg_rtt, "time_offset": self.time_offset
             }
             
             # 发送冲击通知
