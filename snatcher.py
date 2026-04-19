@@ -17,7 +17,7 @@ class UltraFastBot:
         self.user_id = ""
         self.current_cookies = config.COOKIE
         self.is_warmed_up = False
-        # 移动端 UA 列表
+        self.blacklist = set() # 记录有特殊限制的座位
         self.ua_list = [
             "Mozilla/5.0 (iPhone; CPU iPhone OS 16_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.0 Mobile/15E148 Safari/604.1",
             "Mozilla/5.0 (Linux; Android 13; Pixel 7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/116.0.0.0 Mobile Safari/537.36",
@@ -25,7 +25,6 @@ class UltraFastBot:
         ]
 
     def notify(self, success, seat_name=""):
-        """Server酱推送"""
         if not config.SCKEY: return
         url = f"https://sctapi.ftqq.com/{config.SCKEY}.send"
         title = "🎉 HDU 抢座成功！" if success else "❌ HDU 抢座失败"
@@ -40,8 +39,8 @@ class UltraFastBot:
             with sync_playwright() as p:
                 iphone = p.devices['iPhone 14']
                 browser = p.chromium.launch(headless=True)
-                # 随机选取 UA
-                context = browser.new_context(**iphone, user_agent=random.choice(self.ua_list))
+                # 修复：不再传 user_agent，避免与 iphone 内置 UA 冲突
+                context = browser.new_context(**iphone)
                 page = context.new_page()
                 
                 page.goto("https://hdu.huitu.zhishulib.com/User/Index/hduCASLogin")
@@ -50,13 +49,11 @@ class UltraFastBot:
                 try:
                     user_input = page.get_by_placeholder(re.compile(r"学工号|账号"))
                     pass_input = page.get_by_placeholder(re.compile(r"密码"))
-                    
                     user_input.fill(username)
-                    page.wait_for_timeout(random.randint(500, 1200)) # 模拟输入间隔
+                    page.wait_for_timeout(random.randint(500, 1200))
                     pass_input.fill(password)
-                    page.wait_for_timeout(random.randint(500, 1200)) # 模拟输入间隔
+                    page.wait_for_timeout(random.randint(500, 1200))
                     pass_input.press("Enter")
-                    
                     page.wait_for_url("**/Category/list**", timeout=15000)
                 except Exception as e:
                     page.screenshot(path=f"login_err_{username}.png")
@@ -81,13 +78,14 @@ class UltraFastBot:
             return False
 
     def snatch_action(self, task_params, skip_refresh=False):
-        # 触发前随机抖动 (0.3s - 2.0s)
-        logger.info("⏳ 正在进行触发前抖动...")
-        time.sleep(random.uniform(0.3, 2.0))
-
-        if not skip_refresh:
+        # 凭证兜底检查
+        if (skip_refresh or not self.api_token) and not self.api_token:
+            logger.warning("⚠️ 发现 Token 为空，强制重新登录同步...")
             if not self.refresh_credentials(task_params['username'], task_params['password']):
                 return False
+
+        logger.info("⏳ 正在进行触发前抖动...")
+        time.sleep(random.uniform(0.3, 2.0))
 
         hall = task_params['floor']
         seat_list = task_params['seat_list']
@@ -105,29 +103,38 @@ class UltraFastBot:
         }
         url = "https://hdu.huitu.zhishulib.com/Seat/Index/bookSeats?LAB_JSON=1"
 
-        logger.info(f"🔥 正在对 {len(seat_list)} 个目标发起拟人化冲击...")
-        
         import concurrent.futures
         success_flag = [False]
         success_name = [""]
 
-        def try_book(item):
-            if success_flag[0]: return # 只要有一个成功就停止其他线程的尝试
+        def try_book(item, is_retry=False):
+            if success_flag[0]: return
             
-            # 线程入口随机延迟 (0 - 0.25s)
-            time.sleep(random.uniform(0, 0.25))
+            # 线程错峰：0.5s - 1.5s
+            if not is_retry:
+                time.sleep(random.uniform(0.5, 1.5))
             
             name, s_id = item
+            if name in self.blacklist: return
+
             data = {"beginTime": start_ts, "duration": dur_sec, "seats[0]": s_id, "seatBookers[0]": self.user_id}
             try:
                 resp = requests.post(url, data=data, headers=headers, timeout=10)
                 res_json = resp.json()
                 msg = res_json.get('msg') or res_json.get('message') or str(res_json)
+                
                 if "成功" in msg:
                     logger.info(f"🎊 【{name}号】预约成功！")
                     success_flag[0] = True
                     success_name[0] = name
                     return True
+                elif "频繁" in msg and not is_retry:
+                    logger.warning(f"⏳ {name}号请求过快，2秒后自动重试一次...")
+                    time.sleep(2)
+                    return try_book(item, is_retry=True)
+                elif "必须在预约人列表" in msg:
+                    logger.error(f"🚫 {name}号疑似为特权白名单座位，已加入本地黑名单。")
+                    self.blacklist.add(name)
                 else:
                     logger.warning(f"💡 {name}号: {msg}")
             except Exception as e:
@@ -137,9 +144,7 @@ class UltraFastBot:
         with concurrent.futures.ThreadPoolExecutor(max_workers=4) as executor:
             executor.map(try_book, seat_list)
         
-        # 结果反馈
         if success_flag[0]:
             self.notify(True, success_name[0])
             return True
-        else:
-            return False
+        return False
