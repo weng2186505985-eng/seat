@@ -238,16 +238,28 @@ class TaskManager:
                 ready_users = {t['username'] for t in self.tasks if t['status'] == 'ready'}
                 warming_users = {t['username'] for t in self.tasks if t['status'] == 'warming'}
                 
+                # 收集本轮需要清空黑名单的用户
+                users_to_reset_blacklist = set()
+                for task in self.tasks:
+                    if task.get('last_run_date') != today_str:
+                        users_to_reset_blacklist.add(task['username'])
+
+                # 修复 Bug #1 & #5: 跨天先清空黑名单，再重建列表
+                for u in users_to_reset_blacklist:
+                    bot = self._get_bot(u)
+                    bot.clear_blacklist()
+
                 for task in self.tasks:
                     # 跳过已完成且非循环的任务
                     if task['status'] in ['completed', 'failed'] and not task.get('recurring'): continue
                     
-                    # 跨天自动重置
+                    # 跨天自动重置 (此时黑名单已清空)
                     if task.get('last_run_date') != today_str:
                         if task['status'] in ['completed', 'failed']:
                             task['status'] = 'waiting'
-                            bot = self._get_bot(task['username'])
-                            task['seat_list'] = self._build_seat_list(task['floor'], task['seat_display'], task.get('preferred_seat', ""), bot)
+                        
+                        bot = self._get_bot(task['username'])
+                        task['seat_list'] = self._build_seat_list(task['floor'], task['seat_display'], task.get('preferred_seat', ""), bot)
                     
                     if task.get('last_run_date') == today_str: continue
 
@@ -294,7 +306,12 @@ class TaskManager:
                 bot.notify(True, custom_title="⚔️ 预热完成", 
                            custom_msg=f"账号 {u} Token 就绪，将在 {task['triggerTime']} 准时出击\n目标：{task['floor']} {task['seat_display']}")
             else:
-                with self.lock: task['status'] = "waiting"
+                # 修复 Bug #3: 预热失败时，同账号所有 warming 任务均回退
+                with self.lock:
+                    for t in self.tasks:
+                        if t['username'] == u and t['status'] == 'warming':
+                            t['status'] = "waiting"
+                logger.warning(f"⚠️ 账号 {u} 预热失败，已重置相关任务状态")
         threading.Thread(target=_worker, daemon=True).start()
 
     def _run_task_snatch(self, task, skip_refresh, trigger_ts):
@@ -321,6 +338,10 @@ class TaskManager:
             for i in range(2):
                 if i > 0:
                     time.sleep(1.5)
+                    # 修复 Bug #6: 重试时刷新 seat_list，剔除第一轮中确认不可用的座位
+                    with self.lock:
+                        params['seat_list'] = self._build_seat_list(task['floor'], task['seat_display'], task.get('preferred_seat', ""), bot)
+                    
                     # 发送重试通知
                     bot.notify(False, custom_title=f"⚠️ 第{i}次重试", 
                                custom_msg=f"第一轮未抢到，正在发起第 {i} 次重试...")
@@ -331,7 +352,9 @@ class TaskManager:
                     break
             
             with self.lock:
-                task['last_run_date'] = datetime.datetime.now().strftime("%Y-%m-%d")
+                # 修复 Bug #7: 使用同步后的服务器时间作为运行标记，确保逻辑一致
+                current_now = datetime.datetime.fromtimestamp(time.time() + self.time_offset)
+                task['last_run_date'] = current_now.strftime("%Y-%m-%d")
                 if success:
                     task['status'] = "completed"
                     # 智能锁定：记录真实抢到的座位号

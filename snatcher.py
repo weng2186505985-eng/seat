@@ -32,6 +32,13 @@ class UltraFastBot:
         self.session.mount("https://", adapter)
         self.session.mount("http://", adapter)
         self.state_lock = threading.Lock()
+        self.blacklist = set()
+
+    def clear_blacklist(self):
+        """每日重置黑名单，确保循环任务不会逐日缩减可用池"""
+        with self.state_lock:
+            self.blacklist.clear()
+            logger.info("🧹 已清空黑名单，开启新一轮尝试")
 
     def notify(self, success, seat_name="", custom_msg="", custom_title=""):
         """Server酱推送：异步发送，支持自定义标题和内容"""
@@ -153,63 +160,64 @@ class UltraFastBot:
             logger_config.set_trace_id(current_trace_id)
             name, s_id = item
             
-            for attempt in range(2): # 显式循环重试，替代递归
-                if success_event.is_set(): return
-                
-                start_time = time.time()
-                try:
-                    # 动态生成请求头
-                    current_headers = {
-                        "api-token": snap_token,
-                        "Cookie": snap_cookies,
-                        "User-Agent": random.choice(self.ua_list),
-                        "Referer": "https://hdu.huitu.zhishulib.com/",
-                        "X-Requested-With": "XMLHttpRequest"
-                    }
-
-                    if attempt == 0: 
-                        time.sleep(random.uniform(0.01, 0.05))
+            try:
+                for attempt in range(2): # 显式循环重试，替代递归
+                    if success_event.is_set(): return
                     
-                    with self.state_lock:
-                        if name in self.blacklist: return
-
-                    data = {"beginTime": start_ts, "duration": dur_sec, "seats[0]": s_id, "seatBookers[0]": snap_uid}
-                    
+                    start_time = time.time()
                     try:
-                        resp = self.session.post(url, data=data, headers=current_headers, timeout=(2.0, 8.0))
-                        res_json = resp.json()
-                    except Exception as e:
-                        logger.warning(f"⚠️ 【{name}号】网络请求或解析失败 (重试 {attempt}): {e}")
-                        continue 
+                        # 动态生成请求头
+                        current_headers = {
+                            "api-token": snap_token,
+                            "Cookie": snap_cookies,
+                            "User-Agent": random.choice(self.ua_list),
+                            "Referer": "https://hdu.huitu.zhishulib.com/",
+                            "X-Requested-With": "XMLHttpRequest"
+                        }
 
-                    msg = res_json.get('msg') or res_json.get('message') or str(res_json)
-                    
-                    if any(kw in msg for kw in ["成功", "已经预约", "已有预约", "已经有", "已有"]):
-                        logger.info(f"🎊 【{name}号】预约成功！(服务器返回: {msg})")
-                        success_name[0] = name
-                        success_event.set()
-                        return True
-                    elif "频繁" in msg or "太快" in msg:
-                        if attempt == 0:
-                            logger.warning(f"⏳ 【{name}号】操作频繁，等待重试...")
-                            time.sleep(1.5)
-                            continue
-                    elif any(kw in msg for kw in ["必须在预约人列表", "已被预约", "已被占用", "该时间段不可预约"]):
+                        if attempt == 0: 
+                            time.sleep(random.uniform(0.01, 0.05))
+                        
                         with self.state_lock:
-                            self.blacklist.add(name)
-                        logger.info(f"📍 【{name}号】不可用: {msg}")
-                    else:
-                        # 记录其他未定义的服务器响应
-                        logger.info(f"📡 【{name}号】服务器响应: {msg}")
-                except Exception as e:
-                    logger.debug(f"⚠️ 请求异常: {e}")
-                
-                duration = (time.time() - start_time) * 1000
-                logger.debug(f"⏱️ 【{name}号】请求耗时: {duration:.2f}ms")
-                return False
+                            if name in self.blacklist: return
+
+                        data = {"beginTime": start_ts, "duration": dur_sec, "seats[0]": s_id, "seatBookers[0]": snap_uid}
+                        
+                        try:
+                            resp = self.session.post(url, data=data, headers=current_headers, timeout=(2.0, 8.0))
+                            res_json = resp.json()
+                        except Exception as e:
+                            logger.warning(f"⚠️ 【{name}号】网络请求或解析失败 (重试 {attempt}): {e}")
+                            continue 
+
+                        msg = res_json.get('msg') or res_json.get('message') or str(res_json)
+                        
+                        if any(kw in msg for kw in ["成功", "已经预约", "已有预约", "已经有", "已有"]):
+                            logger.info(f"🎊 【{name}号】预约成功！(服务器返回: {msg})")
+                            success_name[0] = name
+                            success_event.set()
+                            return True
+                        elif "频繁" in msg or "太快" in msg:
+                            if attempt == 0:
+                                logger.warning(f"⏳ 【{name}号】操作频繁，等待重试...")
+                                time.sleep(1.5)
+                                continue
+                        elif any(kw in msg for kw in ["必须在预约人列表", "已被预约", "已被占用", "该时间段不可预约"]):
+                            if not success_event.is_set(): # 修复 Bug #2: 只有在没人成功时才拉黑
+                                with self.state_lock:
+                                    self.blacklist.add(name)
+                                logger.info(f"📍 【{name}号】不可用: {msg}")
+                        else:
+                            # 记录其他未定义的服务器响应
+                            logger.info(f"📡 【{name}号】服务器响应: {msg}")
+                    except Exception as e:
+                        logger.debug(f"⚠️ 内部处理异常: {e}")
+                    finally:
+                        duration = (time.time() - start_time) * 1000
+                        logger.debug(f"⏱️ 【{name}号】请求耗时: {duration:.2f}ms")
             except Exception as e:
                 logger.error(f"⚠️ 线程执行异常: {e}")
-                return False
+            return False
 
         # 使用并发执行。对于大多数场馆，3个并发线程足以在毫秒级覆盖首选座及备选座
         with concurrent.futures.ThreadPoolExecutor(max_workers=3) as executor:
