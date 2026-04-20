@@ -69,12 +69,14 @@ class TaskManager:
                         if 0 < diff < 1800: # 30分钟内
                             is_near_task = True
             
-            self._sync_server_time(precision=needs_precision)
+            success = self._sync_server_time(precision=needs_precision)
             
             if needs_precision:
                 wait_sec = 60 # 临战状态，每分钟校准一次
             elif is_near_task:
                 wait_sec = 300 # 战前准备，每 5 分钟校准一次
+            elif not success:
+                wait_sec = 60 # 同步失败，1 分钟后重试
             else:
                 wait_sec = 14400 # 平时佛系，4 小时校准一次
                 
@@ -86,8 +88,12 @@ class TaskManager:
             url = "https://hdu.huitu.zhishulib.com/Seat/Index/searchSeats?LAB_JSON=1"
             start_local = time.time()
             resp = requests.get(url, timeout=5)
-            rtt = time.time() - start_local
-            self.avg_rtt = rtt
+            t1 = time.time()
+            rtt = t1 - start_local
+            
+            # 使用指数移动平均 (EMA) 平滑 RTT
+            if self.avg_rtt == 0.05: self.avg_rtt = rtt
+            else: self.avg_rtt = 0.7 * self.avg_rtt + 0.3 * rtt
             
             data = resp.json()
             # 1. 广谱字段扫描
@@ -99,8 +105,8 @@ class TaskManager:
 
             if st:
                 server_ts = float(st) / 1000.0 if float(st) > 2000000000 else float(st)
-                adjusted_server_ts = server_ts + (rtt / 2)
-                self.time_offset = adjusted_server_ts - time.time()
+                adjusted_server_ts = server_ts + (self.avg_rtt / 2)
+                self.time_offset = adjusted_server_ts - t1
                 logger.info(f"🚀 [高精度] 成功获取 JSON 毫秒时钟: 偏差 {self.time_offset*1000:.1f}ms, RTT {rtt*1000:.1f}ms")
             else:
                 date_str = resp.headers.get('Date')
@@ -111,12 +117,13 @@ class TaskManager:
                     for _ in range(8):
                         time.sleep(0.15)
                         r = requests.head(url, timeout=3)
+                        t_sniff = time.time()
                         new_date = r.headers.get('Date')
                         if new_date != last_date:
                             server_ts = datetime.datetime.strptime(new_date, '%a, %d %b %Y %H:%M:%S GMT').replace(
                                 tzinfo=datetime.timezone.utc).timestamp()
                             rtt_sniff = r.elapsed.total_seconds()
-                            self.time_offset = (server_ts + rtt_sniff / 2) - time.time()
+                            self.time_offset = (server_ts + rtt_sniff / 2) - t_sniff
                             logger.info(f"🎯 [极致精度] 战时跳秒捕捉成功！偏差: {self.time_offset*1000:.1f}ms")
                             break
                         last_date = new_date
@@ -124,17 +131,18 @@ class TaskManager:
                     # 🕒 日常佛系模式：中值修正 (+0.5s)
                     server_ts = datetime.datetime.strptime(date_str, '%a, %d %b %Y %H:%M:%S GMT').replace(
                         tzinfo=datetime.timezone.utc).timestamp() + 0.5
-                    adjusted_server_ts = server_ts + (rtt / 2)
-                    self.time_offset = adjusted_server_ts - time.time()
+                    adjusted_server_ts = server_ts + (self.avg_rtt / 2)
+                    self.time_offset = adjusted_server_ts - t1
                     logger.info(f"⏰ [中精度] 日常对时完成: 偏差 {self.time_offset*1000:.1f}ms (Header 估算，可能存在 ±500ms 误差)")
                 else:
                     self.time_offset = 0
                     logger.warning(f"❌ [低精度] 无法获取服务器参考时间")
             
             self.last_sync_time = time.time()
+            return True
         except Exception as e:
-            self.time_offset = 0
             logger.warning(f"⚠️ 时钟同步异常: {e}")
+            return False
 
     def load_tasks(self):
         if os.path.exists(self.tasks_file):
@@ -169,7 +177,7 @@ class TaskManager:
         return self.user_bots[username]
 
     def add_task(self, data):
-        task_id = str(int(time.time()))
+        task_id = uuid.uuid4().hex[:12] # 使用更可靠的 UUID 防止冲突
         username = data['username']
         with self.lock:
             bot = self._get_bot(username)
@@ -326,7 +334,8 @@ class TaskManager:
                 "seat_list": task['seat_list'], "date_offset": task['dateOffset'],
                 "start_time": task['startTime'], "end_time": task['endTime'],
                 "trigger_ts": trigger_ts, "rtt": self.avg_rtt, "time_offset": self.time_offset,
-                "preferred_seat": task.get('preferred_seat')
+                "preferred_seat": task.get('preferred_seat'),
+                "synced_now": datetime.datetime.fromtimestamp(time.time() + self.time_offset)
             }
             
             # 发送冲击通知

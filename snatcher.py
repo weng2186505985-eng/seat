@@ -129,7 +129,8 @@ class UltraFastBot:
 
         hall = task_params['floor']
         seat_list = task_params['seat_list']
-        target_date = (datetime.datetime.now() + datetime.timedelta(days=task_params['date_offset'])).strftime("%Y-%m-%d")
+        synced_now = task_params.get('synced_now', datetime.datetime.now())
+        target_date = (synced_now + datetime.timedelta(days=task_params['date_offset'])).strftime("%Y-%m-%d")
         start_ts = int(datetime.datetime.strptime(f"{target_date} {task_params['start_time']}", "%Y-%m-%d %H:%M").timestamp())
         end_ts = int(datetime.datetime.strptime(f"{target_date} {task_params['end_time']}", "%Y-%m-%d %H:%M").timestamp())
         dur_sec = end_ts - start_ts
@@ -137,10 +138,12 @@ class UltraFastBot:
         url = "https://hdu.huitu.zhishulib.com/Seat/Index/bookSeats?LAB_JSON=1"
         
         pref = task_params.get('preferred_seat')
-        # 智能随机化：如果明确有“首选座”，则首选座保持第一，其余乱序；否则全列表随机
-        if pref and len(seat_list) > 1 and seat_list[0][0] == pref:
-            first = seat_list[0]
-            others = seat_list[1:]
+        # 智能随机化：如果明确有“首选座”，确保其排在第一，其余乱序
+        if pref and any(item[0] == pref for item in seat_list):
+            # 提取首选座项
+            first = next(item for item in seat_list if item[0] == pref)
+            # 提取非首选座项
+            others = [item for item in seat_list if item[0] != pref]
             random.shuffle(others)
             seat_list = [first] + others
         else:
