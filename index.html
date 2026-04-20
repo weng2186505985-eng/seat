@@ -223,27 +223,31 @@
             });
         }
 
+        let lastLogIndex = 0;
         setInterval(async () => {
             try {
-                const resp = await fetch('/get_logs');
-                const logs = await resp.json();
+                const resp = await fetch(`/get_logs?last_index=${lastLogIndex}`);
+                const data = await resp.json();
                 const container = document.getElementById('logContainer');
-                logs.forEach(l => {
-                    let msg = l.msg;
-                    // 处理 JSON 日志，只提取 MESSAGE
-                    if (msg.trim().startsWith('{')) {
-                        try {
-                            const obj = JSON.parse(msg);
-                            msg = obj.MESSAGE || obj.msg || msg;
-                        } catch(e) {}
-                    }
-                    
-                    const div = document.createElement('div');
-                    div.className = 'log-line';
-                    div.innerHTML = `<span class="log-time">[${l.time}]</span> <span class="log-${l.level}">${msg}</span>`;
-                    container.appendChild(div);
-                });
-                if(logs.length > 0) container.scrollTop = container.scrollHeight;
+                
+                if (data.logs && data.logs.length > 0) {
+                    data.logs.forEach(l => {
+                        let msg = l.msg;
+                        if (msg.trim().startsWith('{')) {
+                            try {
+                                const obj = JSON.parse(msg);
+                                msg = obj.MESSAGE || obj.msg || msg;
+                            } catch(e) {}
+                        }
+                        
+                        const div = document.createElement('div');
+                        div.className = 'log-line';
+                        div.innerHTML = `<span class="log-time">[${l.time}]</span> <span class="log-${l.level}">${msg}</span>`;
+                        container.appendChild(div);
+                    });
+                    lastLogIndex = data.last_index;
+                    container.scrollTop = container.scrollHeight;
+                }
             } catch(e) {}
         }, 1000);
 

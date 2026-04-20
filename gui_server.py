@@ -17,14 +17,19 @@ class LogQueueHandler(logging.Handler):
     def __init__(self):
         super().__init__()
         self.logs = []
+        self.lock = threading.Lock() # 引入线程锁防止竞态
+        
     def emit(self, record):
         try:
-            self.logs.append({
-                "time": time.strftime("%H:%M:%S"),
-                "msg": self.format(record),
-                "level": record.levelname.lower()
-            })
-            if len(self.logs) > 100: self.logs.pop(0)
+            with self.lock:
+                self.logs.append({
+                    "time": time.strftime("%H:%M:%S"),
+                    "msg": self.format(record),
+                    "level": record.levelname.lower()
+                })
+                # 保持最多 200 条，超出则截断前面的
+                if len(self.logs) > 200: 
+                    self.logs.pop(0)
         except: pass
 
 log_handler = LogQueueHandler()
@@ -51,10 +56,15 @@ async def get_index():
     return FileResponse("index.html")
 
 @app.get("/get_logs")
-async def get_logs():
-    logs = list(log_handler.logs)
-    log_handler.logs = []
-    return logs
+async def get_logs(last_index: int = 0):
+    with log_handler.lock:
+        total_len = len(log_handler.logs)
+        # 如果前端游标超限（如后端重启），重置为 0
+        if last_index > total_len:
+            last_index = 0
+            
+        new_logs = log_handler.logs[last_index:total_len]
+        return {"logs": new_logs, "last_index": total_len}
 
 @app.get("/tasks")
 async def list_tasks():

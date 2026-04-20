@@ -21,11 +21,8 @@ class UltraFastBot:
         self.current_cookies = config.COOKIE
         self.is_warmed_up = False
         self.blacklist = set() 
-        self.ua_list = [
-            "Mozilla/5.0 (iPhone; CPU iPhone OS 16_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.0 Mobile/15E148 Safari/604.1",
-            "Mozilla/5.0 (Linux; Android 13; Pixel 7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/116.0.0.0 Mobile Safari/537.36",
-            "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1"
-        ]
+        # 必须与 Playwright 中的设备 UA 严格相同，防止 Token 因设备漂移失效
+        self.fixed_ua = "Mozilla/5.0 (iPhone; CPU iPhone OS 16_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.0 Mobile/15E148 Safari/604.1"
         self.session = requests.Session()
         # 配置连接池：保持长连接，极大缩短 TLS 握手耗时
         self.session.mount("https://", adapter)
@@ -215,7 +212,7 @@ class UltraFastBot:
                         current_headers = {
                             "api-token": snap_token,
                             "Cookie": snap_cookies,
-                            "User-Agent": random.choice(self.ua_list),
+                            "User-Agent": self.fixed_ua,
                             "Referer": "https://hdu.huitu.zhishulib.com/",
                             "X-Requested-With": "XMLHttpRequest"
                         }
@@ -264,9 +261,13 @@ class UltraFastBot:
                 logger.error(f"⚠️ 线程执行异常: {e}")
             return False
 
-        # 使用并发执行。对于大多数场馆，3个并发线程足以在毫秒级覆盖首选座及备选座
+        # 使用并发执行。使用 submit 替代 map 以实现真正的“熔断”提交
         with concurrent.futures.ThreadPoolExecutor(max_workers=3) as executor:
-            executor.map(try_book, seat_list)
+            futures = []
+            for item in seat_list:
+                if success_event.is_set(): break # 及时止损，不再提交新任务
+                futures.append(executor.submit(try_book, item))
+            concurrent.futures.wait(futures) # 等待正在处理的请求落地
         
         if success_event.is_set():
             # 修改通知描述，包含场馆和日期
