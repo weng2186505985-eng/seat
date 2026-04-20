@@ -31,6 +31,10 @@ class TaskManager:
         self.scheduler_thread.daemon = True
         self.scheduler_thread.start()
 
+        self.sync_thread = threading.Thread(target=self._time_sync_loop)
+        self.sync_thread.daemon = True
+        self.sync_thread.start()
+
     def _sync_server_time(self):
         try:
             # 放弃秒级精度的 Header Date，尝试获取带有毫秒时间戳的业务 API
@@ -41,24 +45,38 @@ class TaskManager:
             self.avg_rtt = rtt
             
             data = resp.json()
-            # 尝试从响应 JSON 中提取服务器毫秒时间戳 (Huitu 系统常见字段)
-            st = data.get('serverTime') or data.get('now') or data.get('time')
+            # 1. 广谱字段扫描 (增加对 timestamp, sysTime, current_time 等字段的检查)
+            st = data.get('serverTime') or data.get('now') or data.get('time') or data.get('timestamp') or data.get('sysTime')
+            
+            # 2. 深度扫描（如果根目录没有，检查 data 内部）
+            if not st and isinstance(data.get('data'), dict):
+                st = data['data'].get('serverTime') or data['data'].get('now') or data['data'].get('time')
+
             if st:
-                # 如果 st 是字符串或整数毫秒
+                # 处理毫秒级/秒级时间戳
                 server_ts = float(st) / 1000.0 if float(st) > 2000000000 else float(st)
-                # 考虑 RTT 补偿
                 adjusted_server_ts = server_ts + (rtt / 2)
                 self.time_offset = adjusted_server_ts - time.time()
-                logger.info(f"⏰ 高精度时钟同步：偏差 {self.time_offset*1000:.1f}ms, RTT {rtt*1000:.1f}ms")
+                logger.info(f"🚀 [高精度] 成功获取 JSON 毫秒时钟: 偏差 {self.time_offset*1000:.1f}ms, RTT {rtt*1000:.1f}ms")
             else:
-                # 如果 API 没带时间戳，宁愿相信本地 NTP 同步的时钟，偏差设为 0
-                self.time_offset = 0
-                logger.info(f"⏰ 未获取到服务器毫秒时钟，信任本地 NTP 时钟 (RTT {rtt*1000:.1f}ms)")
+                # 3. Header Date 智能兜底校准（比完全信任本地 NTP 更稳）
+                date_str = resp.headers.get('Date')
+                if date_str:
+                    # HTTP Date 只到秒，我们加上 0.5 秒中值补偿，将平均误差降至最低
+                    server_ts = datetime.datetime.strptime(date_str, '%a, %d %b %Y %H:%M:%S GMT').replace(
+                        tzinfo=datetime.timezone.utc).timestamp()
+                    server_ts += 0.5 
+                    adjusted_server_ts = server_ts + (rtt / 2)
+                    self.time_offset = adjusted_server_ts - time.time()
+                    logger.info(f"⚠️ [中精度] 使用 Header 兜底校准: 偏差 {self.time_offset*1000:.1f}ms (JSON无时钟)")
+                else:
+                    self.time_offset = 0
+                    logger.warning(f"❌ [低精度] 无法获取服务器时间参考，信任本地时钟 (RTT {rtt*1000:.1f}ms)")
             
             self.last_sync_time = time.time()
         except Exception as e:
             self.time_offset = 0
-            logger.warning(f"⚠️ 时钟同步失败，使用本地时间: {e}")
+            logger.warning(f"⚠️ 时钟同步异常，使用本地时间: {e}")
 
     def load_tasks(self):
         if os.path.exists(self.tasks_file):
@@ -142,10 +160,17 @@ class TaskManager:
             self.tasks = [t for t in self.tasks if t['id'] != task_id]
         self.save_tasks()
 
+    def _time_sync_loop(self):
+        """独立的时间同步线程，绝不阻塞主调度循环"""
+        while self.running:
+            self._sync_server_time()
+            # 成功后每 30 分钟同步一次，失败后 1 分钟重试
+            wait_sec = 1800 if self.last_sync_time > 0 else 60
+            time.sleep(wait_sec)
+
     def _scheduler_loop(self):
         while self.running:
-            if time.time() - self.last_sync_time > 1800:
-                self._sync_server_time()
+
 
             now_ts = time.time() + self.time_offset
             now = datetime.datetime.fromtimestamp(now_ts)
@@ -156,7 +181,7 @@ class TaskManager:
 
             with self.lock:
                 for task in self.tasks:
-                    if task['status'] == 'failed' and not task.get('recurring'): continue
+                    if task['status'] in ['completed', 'failed'] and not task.get('recurring'): continue
                     
                     if task.get('last_run_date') != today_str:
                         if task['status'] in ['completed', 'failed']:
@@ -220,7 +245,8 @@ class TaskManager:
                 "username": u, "password": task['password'], "floor": task['floor'],
                 "seat_list": task['seat_list'], "date_offset": task['dateOffset'],
                 "start_time": task['startTime'], "end_time": task['endTime'],
-                "trigger_ts": trigger_ts, "rtt": self.avg_rtt, "time_offset": self.time_offset
+                "trigger_ts": trigger_ts, "rtt": self.avg_rtt, "time_offset": self.time_offset,
+                "preferred_seat": task.get('preferred_seat')
             }
             
             # 发送冲击通知
