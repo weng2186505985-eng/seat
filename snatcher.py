@@ -28,11 +28,34 @@ class UltraFastBot:
         ]
         self.session = requests.Session()
         # 配置连接池：保持长连接，极大缩短 TLS 握手耗时
-        adapter = requests.adapters.HTTPAdapter(pool_connections=10, pool_maxsize=10)
         self.session.mount("https://", adapter)
         self.session.mount("http://", adapter)
         self.state_lock = threading.Lock()
         self.blacklist = set()
+
+    # --- 浏览器资源复用 (单例模式) ---
+    _p_instance = None
+    _browser_process = None
+    _resource_lock = threading.Lock()
+
+    @classmethod
+    def get_browser(cls):
+        """复用同一个 Chromium 进程，极大地节省本地 CPU 和内存"""
+        with cls._resource_lock:
+            if cls._browser_process is None:
+                cls._p_instance = sync_playwright().start()
+                cls._browser_process = cls._p_instance.chromium.launch(headless=True)
+                logger.info("🎨 系统浏览器进程已启动")
+            return cls._browser_process
+
+    @classmethod
+    def close_browser(cls):
+        with cls._resource_lock:
+            if cls._browser_process:
+                cls._browser_process.close()
+                cls._p_instance.stop()
+                cls._browser_process = None
+                logger.info("🛑 系统浏览器进程已关闭")
 
     def clear_blacklist(self):
         """每日重置黑名单，确保循环任务不会逐日缩减可用池"""
@@ -67,42 +90,61 @@ class UltraFastBot:
     def refresh_credentials(self, username, password):
         logger.info(f"📡 正在为账号 {username} 同步凭证...")
         try:
-            with sync_playwright() as p:
-                iphone = p.devices['iPhone 14']
-                with p.chromium.launch(headless=True) as browser:
-                    with browser.new_context(**iphone) as context:
-                        page = context.new_page()
-                        page.goto("https://hdu.huitu.zhishulib.com/User/Index/hduCASLogin")
-                        page.wait_for_timeout(random.randint(1000, 2000))
+            browser = self.get_browser()
+            iphone = self._p_instance.devices['iPhone 14']
+            
+            with browser.new_context(**iphone) as context:
+                page = context.new_page()
+                page.goto("https://hdu.huitu.zhishulib.com/User/Index/hduCASLogin")
+                page.wait_for_timeout(random.randint(1000, 2000))
+                
+                try:
+                    # 自动填写登录
+                    user_input = page.get_by_placeholder(re.compile(r"学工号|账号"))
+                    pass_input = page.get_by_placeholder(re.compile(r"密码"))
+                    user_input.fill(username)
+                    page.wait_for_timeout(random.randint(500, 1200))
+                    pass_input.fill(password)
+                    page.wait_for_timeout(random.randint(500, 1200))
+                    pass_input.press("Enter")
+                    
+                    # 等待跳转成功
+                    page.wait_for_url("**/Category/list**", timeout=15000)
+                    page.wait_for_timeout(2000) # 等待 localStorage 写入
+                    
+                    # --- 多方案凭证提取 ---
+                    # 方案 1: 从 localStorage 提取 (针对 Vue/React 应用)
+                    token_value = page.evaluate("window.localStorage.getItem('token') || window.localStorage.getItem('api-token')")
+                    uid_value = page.evaluate("window.localStorage.getItem('uid') || window.localStorage.getItem('userId')")
+                    
+                    # 方案 2: 如果 localStorage 没有，尝试从页面源码正则提取 (传统方案)
+                    if not token_value or not uid_value:
+                        content = page.content()
+                        t_match = re.search(r'api-token["\']\s*:\s*["\']([^"\']+)["\']', content)
+                        u_match = re.search(r'uid["\']\s*:\s*["\'](\d+)["\']', content)
+                        token_value = token_value or (t_match.group(1) if t_match else None)
+                        uid_value = uid_value or (u_match.group(1) if u_match else None)
+                    
+                    with self.state_lock:
+                        if token_value: self.api_token = token_value
+                        else: logger.error(f"❌ 账号 {username} 未能在页面中找到 api-token")
                         
-                        try:
-                            user_input = page.get_by_placeholder(re.compile(r"学工号|账号"))
-                            pass_input = page.get_by_placeholder(re.compile(r"密码"))
-                            user_input.fill(username)
-                            page.wait_for_timeout(random.randint(500, 1200))
-                            pass_input.fill(password)
-                            page.wait_for_timeout(random.randint(500, 1200))
-                            pass_input.press("Enter")
-                            page.wait_for_url("**/Category/list**", timeout=15000)
-                        except Exception as e:
-                            page.screenshot(path=f"login_err_{username}.png")
-                            logger.error(f"❌ 账号 {username} 登录失败: {e}")
-                            return False
+                        if uid_value: self.user_id = uid_value
+                        else: logger.error(f"❌ 账号 {username} 未能在页面中找到 uid")
                         
-                        with self.state_lock:
-                            if token_match: self.api_token = token_match.group(1)
-                            else: logger.error(f"❌ 账号 {username} 未能在页面中找到 api-token")
-                            
-                            if uid_match: self.user_id = uid_match.group(1)
-                            else: logger.error(f"❌ 账号 {username} 未能在页面中找到 uid")
-                            
-                            cookies = context.cookies()
-                            self.current_cookies = "; ".join([f"{c['name']}={c['value']}" for c in cookies])
-                            
-                            if token_match and uid_match:
-                                self.is_warmed_up = True
-                                return True
-                            return False
+                        cookies = context.cookies()
+                        self.current_cookies = "; ".join([f"{c['name']}={c['value']}" for c in cookies])
+                        
+                        if token_value and uid_value:
+                            self.is_warmed_up = True
+                            return True
+                    return False
+                except Exception as e:
+                    page.screenshot(path=f"login_err_{username}.png")
+                    logger.error(f"❌ 账号 {username} 登录失败: {e}")
+                    return False
+                finally:
+                    context.close()
         except Exception as e:
             logger.error(f"❌ 凭证同步异常 (Playwright): {e}", exc_info=True)
             return False

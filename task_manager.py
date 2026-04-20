@@ -113,9 +113,9 @@ class TaskManager:
                 if date_str and precision:
                     # 🎯 战前突击模式：跳秒捕捉算法
                     last_date = date_str
-                    # 步长 150ms，最多 8 次嗅探，跨度 1.2s，足以抓到变秒点
+                    # 步长 300ms，最多 8 次嗅探，跨度 2.4s，足以抓到变秒点且对本地 IP 更友好
                     for _ in range(8):
-                        time.sleep(0.15)
+                        time.sleep(0.3)
                         r = requests.head(url, timeout=3)
                         t_sniff = time.time()
                         new_date = r.headers.get('Date')
