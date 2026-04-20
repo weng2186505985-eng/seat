@@ -9,21 +9,10 @@ import time
 import threading
 from task_manager import TaskManager
 from snatcher import UltraFastBot
-from contextlib import asynccontextmanager
+app = FastAPI()
 
-# --- 全局管理器引用 ---
-tm: TaskManager = None
-
-@asynccontextmanager
-async def lifespan(app: FastAPI):
-    global tm
-    def _init():
-        global tm
-        tm = TaskManager()
-    threading.Thread(target=_init, daemon=True).start()
-    yield
-
-app = FastAPI(lifespan=lifespan)
+# --- 任务管理器 ---
+tm = TaskManager()
 
 # --- 日志中转 ---
 class LogQueueHandler(logging.Handler):
@@ -50,7 +39,7 @@ log_handler.setFormatter(logging.Formatter('%(message)s'))
 logging.getLogger().addHandler(log_handler)
 logging.getLogger().setLevel(logging.INFO)
 
-# --- 任务管理器 (已移动到 lifespan) ---
+# --- 业务逻辑 ---
 
 class TaskItem(BaseModel):
     username: str

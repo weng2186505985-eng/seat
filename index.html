@@ -105,8 +105,12 @@
         async function fetchTasks() {
             try {
                 const resp = await fetch('/tasks');
-                const tasks = await resp.json();
-                renderTasks(tasks);
+                const data = await resp.json();
+                if (data.status === "loading") {
+                    document.getElementById('taskList').innerHTML = '<div style="opacity:0.5; text-align:center; padding:50px;">🔄 系统初始化中，正在加载任务列表...</div>';
+                } else {
+                    renderTasks(data.tasks || []);
+                }
             } catch(e) {}
         }
 
@@ -224,6 +228,26 @@
         }
 
         let lastLogIndex = 0;
+        let lastTaskHash = "";
+
+        async function fetchTasks() {
+            try {
+                const resp = await fetch('/tasks');
+                const data = await resp.json();
+                if (data.status === "loading") {
+                    document.getElementById('taskList').innerHTML = '<div style="opacity:0.5; text-align:center; padding:50px;">🔄 系统初始化中...</div>';
+                    return;
+                }
+                
+                // 性能优化：只有数据变动时才重绘 DOM
+                const currentHash = JSON.stringify(data.tasks);
+                if (currentHash !== lastTaskHash) {
+                    renderTasks(data.tasks || []);
+                    lastTaskHash = currentHash;
+                }
+            } catch(e) {}
+        }
+
         setInterval(async () => {
             try {
                 const resp = await fetch(`/get_logs?last_index=${lastLogIndex}`);
@@ -231,6 +255,7 @@
                 const container = document.getElementById('logContainer');
                 
                 if (data.logs && data.logs.length > 0) {
+                    const fragment = document.createDocumentFragment();
                     data.logs.forEach(l => {
                         let msg = l.msg;
                         if (msg.trim().startsWith('{')) {
@@ -239,19 +264,19 @@
                                 msg = obj.MESSAGE || obj.msg || msg;
                             } catch(e) {}
                         }
-                        
                         const div = document.createElement('div');
                         div.className = 'log-line';
                         div.innerHTML = `<span class="log-time">[${l.time}]</span> <span class="log-${l.level}">${msg}</span>`;
-                        container.appendChild(div);
+                        fragment.appendChild(div);
                     });
+                    container.appendChild(fragment);
                     lastLogIndex = data.last_index;
                     container.scrollTop = container.scrollHeight;
                 }
             } catch(e) {}
-        }, 1000);
+        }, 1500); // 降低对数轮询频率至 1.5s
 
-        setInterval(fetchTasks, 3000);
+        setInterval(fetchTasks, 5000); // 任务列表轮询降至 5s
         fetchTasks();
     </script>
 </body>
