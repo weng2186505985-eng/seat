@@ -25,6 +25,16 @@ def setup_logging(level=logging.INFO):
     if not os.path.exists(log_dir):
         os.makedirs(log_dir)
 
+    # 强制尝试重构标准输出流编码，防止 Windows 控制台 (GBK) 下 emoji 导致崩溃
+    try:
+        # 仅在真终端环境下尝试重构
+        if sys.stdout.isatty():
+            if hasattr(sys.stdout, 'reconfigure'):
+                sys.stdout.reconfigure(encoding='utf-8', errors='replace')
+            if hasattr(sys.stderr, 'reconfigure'):
+                sys.stderr.reconfigure(encoding='utf-8', errors='replace')
+    except: pass
+
     log_format = "%(asctime)s [%(levelname)s] [%(trace_id)s] %(name)s: %(message)s"
     date_format = "%Y-%m-%d %H:%M:%S"
     
@@ -67,4 +77,4 @@ def setup_logging(level=logging.INFO):
     error_handler.setFormatter(formatter)
     root_logger.addHandler(error_handler)
 
-    logging.info("📝 全链路日志系统初始化完成")
+    logging.info("Full-link logging system initialized.")

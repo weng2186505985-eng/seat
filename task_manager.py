@@ -70,6 +70,7 @@ class TaskManager:
                         if 0 < diff < 1800: # 30分钟内
                             is_near_task = True
             
+            # success = self._sync_server_time(precision=needs_precision) # 初始同步由 background thread 处理，避免启动挂起
             success = self._sync_server_time(precision=needs_precision)
             
             if needs_precision:
@@ -108,7 +109,7 @@ class TaskManager:
                 server_ts = float(st) / 1000.0 if float(st) > 2000000000 else float(st)
                 adjusted_server_ts = server_ts + (self.avg_rtt / 2)
                 self.time_offset = adjusted_server_ts - t1
-                logger.info(f"🚀 [高精度] 成功获取 JSON 毫秒时钟: 偏差 {self.time_offset*1000:.1f}ms, RTT {rtt*1000:.1f}ms")
+                logger.info(f"[High Precision] Server time synced via JSON: offset {self.time_offset*1000:.1f}ms, RTT {rtt*1000:.1f}ms")
             else:
                 date_str = resp.headers.get('Date')
                 if date_str and precision:
@@ -134,7 +135,7 @@ class TaskManager:
                         tzinfo=datetime.timezone.utc).timestamp() + 0.5
                     adjusted_server_ts = server_ts + (self.avg_rtt / 2)
                     self.time_offset = adjusted_server_ts - t1
-                    logger.info(f"⏰ [中精度] 日常对时完成: 偏差 {self.time_offset*1000:.1f}ms (Header 估算，可能存在 ±500ms 误差)")
+                    logger.info(f"[Mid Precision] Daily sync completed: offset {self.time_offset*1000:.1f}ms (Header estimate)")
                 else:
                     self.time_offset = 0
                     logger.warning(f"❌ [低精度] 无法获取服务器参考时间")
@@ -249,7 +250,7 @@ class TaskManager:
                 
                 # 修复：每天全局只清空一次黑名单，而不是依赖 last_run_date
                 if self.last_blacklist_clear_date != today_str:
-                    logger.info(f"📅 检测到新的一天 {today_str}，正在全局重置状态...")
+                    logger.info(f"New day detected {today_str}, resetting global state...")
                     for bot_instance in self.user_bots.values():
                         bot_instance.clear_blacklist()
                     self.last_blacklist_clear_date = today_str

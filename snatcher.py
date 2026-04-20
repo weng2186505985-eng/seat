@@ -2,6 +2,7 @@ import time
 import datetime
 import logging
 import requests
+from requests.adapters import HTTPAdapter
 import json
 import os
 import re
@@ -25,6 +26,7 @@ class UltraFastBot:
         self.fixed_ua = "Mozilla/5.0 (iPhone; CPU iPhone OS 16_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.0 Mobile/15E148 Safari/604.1"
         self.session = requests.Session()
         # 配置连接池：保持长连接，极大缩短 TLS 握手耗时
+        adapter = HTTPAdapter(pool_connections=10, pool_maxsize=10)
         self.session.mount("https://", adapter)
         self.session.mount("http://", adapter)
         self.state_lock = threading.Lock()
@@ -58,7 +60,7 @@ class UltraFastBot:
         """每日重置黑名单，确保循环任务不会逐日缩减可用池"""
         with self.state_lock:
             self.blacklist.clear()
-            logger.info("🧹 已清空黑名单，开启新一轮尝试")
+            logger.info("Blacklist cleared for a new attempt.")
 
     def notify(self, success, seat_name="", custom_msg="", custom_title=""):
         """Server酱推送：异步发送，支持自定义标题和内容"""
@@ -235,7 +237,7 @@ class UltraFastBot:
                         msg = res_json.get('msg') or res_json.get('message') or str(res_json)
                         
                         if any(kw in msg for kw in ["成功", "已经预约", "已有预约", "已经有", "已有"]):
-                            logger.info(f"🎊 【{name}号】预约成功！(服务器返回: {msg})")
+                            logger.info(f"SUCCESS: Seat {name} reserved! (Server: {msg})")
                             success_name[0] = name
                             success_event.set()
                             return True

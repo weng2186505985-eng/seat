@@ -101,5 +101,5 @@ async def book_now(data: TaskItem):
     return {"status": "processing"}
 
 if __name__ == "__main__":
-    print("\n[Start] HDU 任务制系统 (正式版 V4.2) 已启动！")
+    print("\n[Start] HDU Task System V4.2 Started!")
     uvicorn.run(app, host="127.0.0.1", port=8000, log_level="error")
