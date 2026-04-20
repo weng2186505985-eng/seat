@@ -9,17 +9,13 @@ import time
 import threading
 from task_manager import TaskManager
 from snatcher import UltraFastBot
-app = FastAPI()
 
-# --- 任务管理器 ---
-tm = TaskManager()
-
-# --- 日志中转 ---
+# --- 1. 日志中转系统 (必须最先启动) ---
 class LogQueueHandler(logging.Handler):
     def __init__(self):
         super().__init__()
         self.logs = []
-        self.lock = threading.Lock() # 引入线程锁防止竞态
+        self.lock = threading.Lock()
         
     def emit(self, record):
         try:
@@ -29,9 +25,7 @@ class LogQueueHandler(logging.Handler):
                     "msg": self.format(record),
                     "level": record.levelname.lower()
                 })
-                # 保持最多 200 条，超出则截断前面的
-                if len(self.logs) > 200: 
-                    self.logs.pop(0)
+                if len(self.logs) > 200: self.logs.pop(0)
         except: pass
 
 log_handler = LogQueueHandler()
@@ -39,7 +33,11 @@ log_handler.setFormatter(logging.Formatter('%(message)s'))
 logging.getLogger().addHandler(log_handler)
 logging.getLogger().setLevel(logging.INFO)
 
-# --- 业务逻辑 ---
+# --- 2. 任务管理器 ---
+tm = TaskManager()
+
+# --- 3. Web 服务 ---
+app = FastAPI()
 
 class TaskItem(BaseModel):
     username: str
@@ -50,7 +48,7 @@ class TaskItem(BaseModel):
     endTime: str
     dateOffset: int
     triggerTime: str
-    recurring: Optional[bool] = False # 循环字段
+    recurring: Optional[bool] = False
 
 @app.get("/", response_class=HTMLResponse)
 async def get_index():
@@ -60,15 +58,13 @@ async def get_index():
 async def get_logs(last_index: int = 0):
     with log_handler.lock:
         total_len = len(log_handler.logs)
-        # 如果前端游标超限（如后端重启），重置为 0
-        if last_index > total_len:
-            last_index = 0
-            
+        if last_index > total_len: last_index = 0
         new_logs = log_handler.logs[last_index:total_len]
         return {"logs": new_logs, "last_index": total_len}
 
 @app.get("/tasks")
 async def list_tasks():
+    # 直接返回，不再检查 None，因为 tm 是同步初始化的
     clean_tasks = []
     for t in tm.tasks:
         c = t.copy()
@@ -80,7 +76,7 @@ async def list_tasks():
 async def add_task(data: TaskItem):
     task_id = tm.add_task(data.dict())
     if task_id: return {"status": "added", "id": task_id}
-    return {"status": "error", "message": "座位解析失败"}
+    return {"status": "error", "message": "解析失败"}
 
 @app.post("/delete_task/{task_id}")
 async def delete_task(task_id: str):
@@ -103,4 +99,4 @@ async def book_now(data: TaskItem):
 
 if __name__ == "__main__":
     print("\n[Start] HDU Task System V4.2 Started!")
-    uvicorn.run(app, host="0.0.0.0", port=8000, log_level="info")
+    uvicorn.run(app, host="127.0.0.1", port=8000, log_level="info")

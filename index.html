@@ -102,18 +102,6 @@
             document.getElementById(id).oninput = () => localStorage.setItem('hdu_' + id, document.getElementById(id).value);
         });
 
-        async function fetchTasks() {
-            try {
-                const resp = await fetch('/tasks');
-                const data = await resp.json();
-                if (data.status === "loading") {
-                    document.getElementById('taskList').innerHTML = '<div style="opacity:0.5; text-align:center; padding:50px;">🔄 系统初始化中，正在加载任务列表...</div>';
-                } else {
-                    renderTasks(data.tasks || []);
-                }
-            } catch(e) {}
-        }
-
         function renderTasks(tasks) {
             const container = document.getElementById('taskList');
             if(tasks.length === 0) {
@@ -233,16 +221,12 @@
         async function fetchTasks() {
             try {
                 const resp = await fetch('/tasks');
-                const data = await resp.json();
-                if (data.status === "loading") {
-                    document.getElementById('taskList').innerHTML = '<div style="opacity:0.5; text-align:center; padding:50px;">🔄 系统初始化中...</div>';
-                    return;
-                }
+                const tasks = await resp.json();
                 
                 // 性能优化：只有数据变动时才重绘 DOM
-                const currentHash = JSON.stringify(data.tasks);
+                const currentHash = JSON.stringify(tasks);
                 if (currentHash !== lastTaskHash) {
-                    renderTasks(data.tasks || []);
+                    renderTasks(tasks || []);
                     lastTaskHash = currentHash;
                 }
             } catch(e) {}

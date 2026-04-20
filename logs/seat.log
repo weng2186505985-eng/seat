@@ -3,3 +3,10 @@
 2026-04-20 23:55:41 [INFO] [SYSTEM] root: 📝 全链路日志系统初始化完成
 2026-04-20 23:55:41 [INFO] [SYSTEM] task_manager: ⏰ [中精度] 日常对时完成: 偏差 1257.6ms (Header 估算，可能存在 ±500ms 误差)
 2026-04-21 00:13:41 [INFO] [SYSTEM] root: 📝 全链路日志系统初始化完成
+2026-04-21 00:35:34 [INFO] [SYSTEM] root: Full-link logging system initialized.
+2026-04-21 00:35:34 [INFO] [SYSTEM] task_manager: New day detected 2026-04-21, resetting global state...
+2026-04-21 00:35:43 [INFO] [SYSTEM] root: Full-link logging system initialized.
+2026-04-21 00:35:43 [INFO] [SYSTEM] task_manager: New day detected 2026-04-21, resetting global state...
+2026-04-21 00:35:58 [INFO] [SYSTEM] root: Full-link logging system initialized.
+2026-04-21 00:35:58 [INFO] [SYSTEM] task_manager: New day detected 2026-04-21, resetting global state...
+2026-04-21 00:35:58 [INFO] [SYSTEM] task_manager: [Mid Precision] Daily sync completed: offset 680.0ms (Header estimate)
