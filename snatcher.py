@@ -7,8 +7,10 @@ import os
 import re
 import random
 import threading
+import concurrent.futures
 from playwright.sync_api import sync_playwright
 import config
+import logger_config
 
 logger = logging.getLogger(__name__)
 
@@ -29,6 +31,7 @@ class UltraFastBot:
         adapter = requests.adapters.HTTPAdapter(pool_connections=10, pool_maxsize=10)
         self.session.mount("https://", adapter)
         self.session.mount("http://", adapter)
+        self.state_lock = threading.Lock()
 
     def notify(self, success, seat_name="", custom_msg="", custom_title=""):
         """Server酱推送：异步发送，支持自定义标题和内容"""
@@ -79,18 +82,22 @@ class UltraFastBot:
                             logger.error(f"❌ 账号 {username} 登录失败: {e}")
                             return False
                         
-                        cookies = context.cookies()
-                        self.current_cookies = "; ".join([f"{c['name']}={c['value']}" for c in cookies])
-                        content = page.content()
-                        token_match = re.search(r'api-token["\']\s*:\s*["\']([^"\']+)["\']', content)
-                        uid_match = re.search(r'uid["\']\s*:\s*["\'](\d+)["\']', content)
-                        
-                        if token_match: self.api_token = token_match.group(1)
-                        if uid_match: self.user_id = uid_match.group(1)
-                        self.is_warmed_up = True
-                        return True
+                        with self.state_lock:
+                            if token_match: self.api_token = token_match.group(1)
+                            else: logger.error(f"❌ 账号 {username} 未能在页面中找到 api-token")
+                            
+                            if uid_match: self.user_id = uid_match.group(1)
+                            else: logger.error(f"❌ 账号 {username} 未能在页面中找到 uid")
+                            
+                            cookies = context.cookies()
+                            self.current_cookies = "; ".join([f"{c['name']}={c['value']}" for c in cookies])
+                            
+                            if token_match and uid_match:
+                                self.is_warmed_up = True
+                                return True
+                            return False
         except Exception as e:
-            logger.error(f"❌ 凭证同步异常 (Playwright): {e}")
+            logger.error(f"❌ 凭证同步异常 (Playwright): {e}", exc_info=True)
             return False
 
     def snatch_action(self, task_params, skip_refresh=False):
@@ -132,59 +139,80 @@ class UltraFastBot:
         else:
             random.shuffle(seat_list)
 
-
-        import concurrent.futures
         success_event = threading.Event()
         success_name = [""]
+        current_trace_id = logger_config.get_trace_id()
 
-        def try_book(item, is_retry=False):
-            try:
+        # 预先快照状态，减少锁竞争
+        with self.state_lock:
+            snap_token = self.api_token
+            snap_cookies = self.current_cookies
+            snap_uid = self.user_id
+
+        def try_book(item):
+            logger_config.set_trace_id(current_trace_id)
+            name, s_id = item
+            
+            for attempt in range(2): # 显式循环重试，替代递归
                 if success_event.is_set(): return
                 
-                # 动态生成请求头，防止被识别为同一机器人
-                current_headers = {
-                    "api-token": self.api_token,
-                    "Cookie": self.current_cookies,
-                    "User-Agent": random.choice(self.ua_list),
-                    "Referer": "https://hdu.huitu.zhishulib.com/",
-                    "X-Requested-With": "XMLHttpRequest"
-                }
-
-                if not is_retry: 
-                    # 微小随机抖动 (10ms-50ms)，模拟人类点击的自然波动
-                    time.sleep(random.uniform(0.01, 0.05))
-                
-                name, s_id = item
-                if name in self.blacklist: return
-
-                data = {"beginTime": start_ts, "duration": dur_sec, "seats[0]": s_id, "seatBookers[0]": self.user_id}
+                start_time = time.time()
                 try:
-                    # 使用会话连接池发送请求，复用 TCP 隧道，速度提升 2~3 倍
-                    resp = self.session.post(url, data=data, headers=current_headers, timeout=(1.5, 3.0))
+                    # 动态生成请求头
+                    current_headers = {
+                        "api-token": snap_token,
+                        "Cookie": snap_cookies,
+                        "User-Agent": random.choice(self.ua_list),
+                        "Referer": "https://hdu.huitu.zhishulib.com/",
+                        "X-Requested-With": "XMLHttpRequest"
+                    }
+
+                    if attempt == 0: 
+                        time.sleep(random.uniform(0.01, 0.05))
+                    
+                    with self.state_lock:
+                        if name in self.blacklist: return
+
+                    data = {"beginTime": start_ts, "duration": dur_sec, "seats[0]": s_id, "seatBookers[0]": snap_uid}
+                    
                     try:
+                        resp = self.session.post(url, data=data, headers=current_headers, timeout=(2.0, 8.0))
                         res_json = resp.json()
-                    except: return False
+                    except Exception as e:
+                        logger.warning(f"⚠️ 【{name}号】网络请求或解析失败 (重试 {attempt}): {e}")
+                        continue 
 
                     msg = res_json.get('msg') or res_json.get('message') or str(res_json)
                     
-                    if "成功" in msg:
-                        logger.info(f"🎊 【{name}号】预约成功！")
+                    if any(kw in msg for kw in ["成功", "已经预约", "已有预约", "已经有", "已有"]):
+                        logger.info(f"🎊 【{name}号】预约成功！(服务器返回: {msg})")
                         success_name[0] = name
                         success_event.set()
                         return True
-                    elif ("频繁" in msg or "太快" in msg) and not is_retry:
-                        time.sleep(1.5)
-                        return try_book(item, is_retry=True)
-                    elif any(kw in msg for kw in ["必须在预约人列表", "已被预约", "已被占用", "该时间段不可预约", "已经预约"]):
-                        # 只要明确座位不可用，立刻熔断拉黑，不再尝试
-                        self.blacklist.add(name)
-                except: pass
+                    elif "频繁" in msg or "太快" in msg:
+                        if attempt == 0:
+                            logger.warning(f"⏳ 【{name}号】操作频繁，等待重试...")
+                            time.sleep(1.5)
+                            continue
+                    elif any(kw in msg for kw in ["必须在预约人列表", "已被预约", "已被占用", "该时间段不可预约"]):
+                        with self.state_lock:
+                            self.blacklist.add(name)
+                        logger.info(f"📍 【{name}号】不可用: {msg}")
+                    else:
+                        # 记录其他未定义的服务器响应
+                        logger.info(f"📡 【{name}号】服务器响应: {msg}")
+                except Exception as e:
+                    logger.debug(f"⚠️ 请求异常: {e}")
+                
+                duration = (time.time() - start_time) * 1000
+                logger.debug(f"⏱️ 【{name}号】请求耗时: {duration:.2f}ms")
                 return False
             except Exception as e:
                 logger.error(f"⚠️ 线程执行异常: {e}")
                 return False
 
-        with concurrent.futures.ThreadPoolExecutor(max_workers=6) as executor:
+        # 使用并发执行。对于大多数场馆，3个并发线程足以在毫秒级覆盖首选座及备选座
+        with concurrent.futures.ThreadPoolExecutor(max_workers=3) as executor:
             executor.map(try_book, seat_list)
         
         if success_event.is_set():

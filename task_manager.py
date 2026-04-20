@@ -6,11 +6,14 @@ import logging
 import datetime
 import requests
 from snatcher import UltraFastBot
+import logger_config
+import uuid
 
 logger = logging.getLogger(__name__)
 
 class TaskManager:
     def __init__(self):
+        logger_config.setup_logging()
         self.tasks_file = "tasks.json"
         self.tasks = self.load_tasks()
         self.user_bots = {} 
@@ -25,7 +28,8 @@ class TaskManager:
             try:
                 with open("seat_map.json", "r", encoding="utf-8") as f:
                     self.seat_map = json.load(f)
-            except: pass
+            except Exception as e:
+                logger.warning(f"⚠️ 加载 seat_map.json 失败: {e}")
 
         self.scheduler_thread = threading.Thread(target=self._scheduler_loop)
         self.scheduler_thread.daemon = True
@@ -35,7 +39,48 @@ class TaskManager:
         self.sync_thread.daemon = True
         self.sync_thread.start()
 
-    def _sync_server_time(self):
+    def _time_sync_loop(self):
+        """
+        智能时间同步线程：
+        1. 平时：每 4 小时同步一次，仅保持大概偏移。
+        2. 战前 30 分钟：每 5 分钟同步一次。
+        3. 战前 2 分钟：开启高精度毫秒同步。
+        """
+        while self.running:
+            needs_precision = False
+            is_near_task = False
+            
+            with self.lock:
+                now_ts = time.time() + self.time_offset
+                now = datetime.datetime.fromtimestamp(now_ts)
+                for task in self.tasks:
+                    if task['status'] in ['waiting', 'warming', 'ready']:
+                        t_time = datetime.datetime.strptime(task['triggerTime'], "%H:%M:%S").replace(
+                            year=now.year, month=now.month, day=now.day
+                        )
+                        if now > t_time + datetime.timedelta(minutes=2):
+                            t_time += datetime.timedelta(days=1)
+                        
+                        diff = (t_time - now).total_seconds()
+                        
+                        if 0 < diff < 120: # 2分钟内
+                            needs_precision = True
+                            break
+                        if 0 < diff < 1800: # 30分钟内
+                            is_near_task = True
+            
+            self._sync_server_time(precision=needs_precision)
+            
+            if needs_precision:
+                wait_sec = 60 # 临战状态，每分钟校准一次
+            elif is_near_task:
+                wait_sec = 300 # 战前准备，每 5 分钟校准一次
+            else:
+                wait_sec = 14400 # 平时佛系，4 小时校准一次
+                
+            time.sleep(wait_sec)
+
+    def _sync_server_time(self, precision=False):
         try:
             # 放弃秒级精度的 Header Date，尝试获取带有毫秒时间戳的业务 API
             url = "https://hdu.huitu.zhishulib.com/Seat/Index/searchSeats?LAB_JSON=1"
@@ -45,7 +90,7 @@ class TaskManager:
             self.avg_rtt = rtt
             
             data = resp.json()
-            # 1. 广谱字段扫描 (增加对 timestamp, sysTime, current_time 等字段的检查)
+            # 1. 广谱字段扫描
             st = data.get('serverTime') or data.get('now') or data.get('time') or data.get('timestamp') or data.get('sysTime')
             
             # 2. 深度扫描（如果根目录没有，检查 data 内部）
@@ -53,37 +98,52 @@ class TaskManager:
                 st = data['data'].get('serverTime') or data['data'].get('now') or data['data'].get('time')
 
             if st:
-                # 处理毫秒级/秒级时间戳
                 server_ts = float(st) / 1000.0 if float(st) > 2000000000 else float(st)
                 adjusted_server_ts = server_ts + (rtt / 2)
                 self.time_offset = adjusted_server_ts - time.time()
                 logger.info(f"🚀 [高精度] 成功获取 JSON 毫秒时钟: 偏差 {self.time_offset*1000:.1f}ms, RTT {rtt*1000:.1f}ms")
             else:
-                # 3. Header Date 智能兜底校准（比完全信任本地 NTP 更稳）
                 date_str = resp.headers.get('Date')
-                if date_str:
-                    # HTTP Date 只到秒，我们加上 0.5 秒中值补偿，将平均误差降至最低
+                if date_str and precision:
+                    # 🎯 战前突击模式：跳秒捕捉算法
+                    last_date = date_str
+                    # 步长 150ms，最多 8 次嗅探，跨度 1.2s，足以抓到变秒点
+                    for _ in range(8):
+                        time.sleep(0.15)
+                        r = requests.head(url, timeout=3)
+                        new_date = r.headers.get('Date')
+                        if new_date != last_date:
+                            server_ts = datetime.datetime.strptime(new_date, '%a, %d %b %Y %H:%M:%S GMT').replace(
+                                tzinfo=datetime.timezone.utc).timestamp()
+                            rtt_sniff = r.elapsed.total_seconds()
+                            self.time_offset = (server_ts + rtt_sniff / 2) - time.time()
+                            logger.info(f"🎯 [极致精度] 战时跳秒捕捉成功！偏差: {self.time_offset*1000:.1f}ms")
+                            break
+                        last_date = new_date
+                elif date_str:
+                    # 🕒 日常佛系模式：中值修正 (+0.5s)
                     server_ts = datetime.datetime.strptime(date_str, '%a, %d %b %Y %H:%M:%S GMT').replace(
-                        tzinfo=datetime.timezone.utc).timestamp()
-                    server_ts += 0.5 
+                        tzinfo=datetime.timezone.utc).timestamp() + 0.5
                     adjusted_server_ts = server_ts + (rtt / 2)
                     self.time_offset = adjusted_server_ts - time.time()
-                    logger.info(f"⚠️ [中精度] 使用 Header 兜底校准: 偏差 {self.time_offset*1000:.1f}ms (JSON无时钟)")
+                    logger.info(f"⏰ [中精度] 日常对时完成: 偏差 {self.time_offset*1000:.1f}ms (Header 估算，可能存在 ±500ms 误差)")
                 else:
                     self.time_offset = 0
-                    logger.warning(f"❌ [低精度] 无法获取服务器时间参考，信任本地时钟 (RTT {rtt*1000:.1f}ms)")
+                    logger.warning(f"❌ [低精度] 无法获取服务器参考时间")
             
             self.last_sync_time = time.time()
         except Exception as e:
             self.time_offset = 0
-            logger.warning(f"⚠️ 时钟同步异常，使用本地时间: {e}")
+            logger.warning(f"⚠️ 时钟同步异常: {e}")
 
     def load_tasks(self):
         if os.path.exists(self.tasks_file):
             try:
                 with open(self.tasks_file, "r", encoding="utf-8") as f:
                     return json.load(f)
-            except: return []
+            except Exception as e:
+                logger.error(f"❌ 加载任务列表失败: {e}")
+                return []
         return []
 
     def save_tasks(self):
@@ -100,7 +160,8 @@ class TaskManager:
                     f.flush()
                     os.fsync(f.fileno())
                 os.replace(tmp_file, self.tasks_file)
-            except: pass
+            except Exception as e:
+                logger.error(f"❌ 保存任务列表失败: {e}")
 
     def _get_bot(self, username):
         if username not in self.user_bots:
@@ -112,18 +173,19 @@ class TaskManager:
         username = data['username']
         with self.lock:
             bot = self._get_bot(username)
-        seat_list = self._build_seat_list(data['floor'], data['seatRange'], data.get('preferred_seat', ""), bot)
-        if not seat_list: return None
+            seat_list = self._build_seat_list(data['floor'], data['seatRange'], data.get('preferred_seat', ""), bot)
+            if not seat_list: 
+                logger.warning(f"⚠️ 无法为 {username} 构建座位列表: {data['floor']} {data['seatRange']}")
+                return None
 
-        new_task = {
-            "id": task_id, "username": username, "password": data['password'],
-            "floor": data['floor'], "seat_list": seat_list, "seat_display": data['seatRange'],
-            "preferred_seat": data.get('preferred_seat', ""),
-            "dateOffset": data['dateOffset'], "startTime": data['startTime'], "endTime": data['endTime'],
-            "triggerTime": data.get('triggerTime', "20:00:00"), "recurring": data.get('recurring', False),
-            "status": "waiting", "last_run_date": "", "created_at": datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        }
-        with self.lock:
+            new_task = {
+                "id": task_id, "username": username, "password": data['password'],
+                "floor": data['floor'], "seat_list": seat_list, "seat_display": data['seatRange'],
+                "preferred_seat": data.get('preferred_seat', ""),
+                "dateOffset": data['dateOffset'], "startTime": data['startTime'], "endTime": data['endTime'],
+                "triggerTime": data.get('triggerTime', "20:00:00"), "recurring": data.get('recurring', False),
+                "status": "waiting", "last_run_date": "", "created_at": datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            }
             self.tasks.append(new_task)
         self.save_tasks()
         return task_id
@@ -139,7 +201,8 @@ class TaskManager:
                     if name in self.seat_map[hall]:
                         if bot and name in bot.blacklist: continue
                         raw_list.append((name, self.seat_map[hall][name]))
-            except: pass
+            except Exception as e:
+                logger.warning(f"⚠️ 解析座位号范围失败: {e}")
         elif s_range in self.seat_map[hall]:
             if not (bot and s_range in bot.blacklist):
                 raw_list.append((s_range, self.seat_map[hall][s_range]))
@@ -160,18 +223,9 @@ class TaskManager:
             self.tasks = [t for t in self.tasks if t['id'] != task_id]
         self.save_tasks()
 
-    def _time_sync_loop(self):
-        """独立的时间同步线程，绝不阻塞主调度循环"""
-        while self.running:
-            self._sync_server_time()
-            # 成功后每 30 分钟同步一次，失败后 1 分钟重试
-            wait_sec = 1800 if self.last_sync_time > 0 else 60
-            time.sleep(wait_sec)
 
     def _scheduler_loop(self):
         while self.running:
-
-
             now_ts = time.time() + self.time_offset
             now = datetime.datetime.fromtimestamp(now_ts)
             today_str = now.strftime("%Y-%m-%d")
@@ -180,9 +234,15 @@ class TaskManager:
             tasks_to_snatch = []
 
             with self.lock:
+                # 1. 预计算状态集合，将复杂度从 O(n^2) 降为 O(n)
+                ready_users = {t['username'] for t in self.tasks if t['status'] == 'ready'}
+                warming_users = {t['username'] for t in self.tasks if t['status'] == 'warming'}
+                
                 for task in self.tasks:
+                    # 跳过已完成且非循环的任务
                     if task['status'] in ['completed', 'failed'] and not task.get('recurring'): continue
                     
+                    # 跨天自动重置
                     if task.get('last_run_date') != today_str:
                         if task['status'] in ['completed', 'failed']:
                             task['status'] = 'waiting'
@@ -199,16 +259,15 @@ class TaskManager:
                     
                     diff = (t_time - now).total_seconds()
 
+                    # 状态机：waiting -> warming -> ready -> snatching
                     if 0 < diff < 900 and task['status'] == "waiting":
-                        if not any(t['username'] == task['username'] and t['status'] in ['warming', 'ready'] for t in self.tasks):
-                            task['status'] = "warming"
+                        task['status'] = "warming"
+                        if task['username'] not in ready_users and task['username'] not in warming_users:
                             tasks_to_warmup.append(task)
-                        else:
-                            task['status'] = 'warming'
+                            warming_users.add(task['username'])
                     
-                    if task['status'] == 'warming':
-                        if any(t['username'] == task['username'] and t['status'] == 'ready' for t in self.tasks):
-                            task['status'] = 'ready'
+                    elif task['status'] == 'warming' and task['username'] in ready_users:
+                        task['status'] = 'ready'
 
                     if diff <= 2 and task['status'] in ["waiting", "warming", "ready"]:
                         trigger_ts = t_time.timestamp()
@@ -222,6 +281,8 @@ class TaskManager:
 
     def _run_task_warmup(self, task):
         def _worker():
+            trace_id = f"WARM-{uuid.uuid4().hex[:8]}"
+            logger_config.set_trace_id(trace_id)
             u = task['username']
             with self.lock:
                 bot = self._get_bot(u)
@@ -238,6 +299,8 @@ class TaskManager:
 
     def _run_task_snatch(self, task, skip_refresh, trigger_ts):
         def _worker():
+            trace_id = f"SNATCH-{uuid.uuid4().hex[:8]}"
+            logger_config.set_trace_id(trace_id)
             u = task['username']
             with self.lock:
                 bot = self._get_bot(u)
