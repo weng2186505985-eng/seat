@@ -22,6 +22,7 @@ class TaskManager:
         self.time_offset = 0 
         self.avg_rtt = 0.05 # 默认假设 50ms
         self.last_sync_time = 0
+        self.last_blacklist_clear_date = "" # 记录上次清空黑名单的日期
         
         self.seat_map = {}
         if os.path.exists("seat_map.json"):
@@ -246,22 +247,18 @@ class TaskManager:
                 ready_users = {t['username'] for t in self.tasks if t['status'] == 'ready'}
                 warming_users = {t['username'] for t in self.tasks if t['status'] == 'warming'}
                 
-                # 收集本轮需要清空黑名单的用户
-                users_to_reset_blacklist = set()
-                for task in self.tasks:
-                    if task.get('last_run_date') != today_str:
-                        users_to_reset_blacklist.add(task['username'])
-
-                # 修复 Bug #1 & #5: 跨天先清空黑名单，再重建列表
-                for u in users_to_reset_blacklist:
-                    bot = self._get_bot(u)
-                    bot.clear_blacklist()
+                # 修复：每天全局只清空一次黑名单，而不是依赖 last_run_date
+                if self.last_blacklist_clear_date != today_str:
+                    logger.info(f"📅 检测到新的一天 {today_str}，正在全局重置状态...")
+                    for bot_instance in self.user_bots.values():
+                        bot_instance.clear_blacklist()
+                    self.last_blacklist_clear_date = today_str
 
                 for task in self.tasks:
                     # 跳过已完成且非循环的任务
                     if task['status'] in ['completed', 'failed'] and not task.get('recurring'): continue
                     
-                    # 跨天自动重置 (此时黑名单已清空)
+                    # 跨天自动重置任务状态
                     if task.get('last_run_date') != today_str:
                         if task['status'] in ['completed', 'failed']:
                             task['status'] = 'waiting'
