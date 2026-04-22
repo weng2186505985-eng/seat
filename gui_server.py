@@ -1,10 +1,13 @@
 
 import uvicorn
 from fastapi import FastAPI, BackgroundTasks
-from fastapi.responses import HTMLResponse, FileResponse
+from fastapi.responses import HTMLResponse, FileResponse, StreamingResponse
 from pydantic import BaseModel
 from typing import Optional
 import logging
+import asyncio
+import json
+import hashlib
 import time
 import os
 import threading
@@ -12,6 +15,7 @@ from task_manager import TaskManager
 from snatcher import UltraFastBot
 from contextlib import asynccontextmanager
 import logger_config
+import notifier
 from collections import deque
 
 # --- 全局变量 ---
@@ -129,14 +133,66 @@ async def list_tasks():
     if not tm: return []
     try:
         clean_tasks = []
-        # 直接遍历，不加锁，尽量减少阻塞
         for t in list(tm.tasks):
-            c = t.copy()
+            c = {k: v for k, v in t.items() if not k.startswith('_')}
             if 'bot_instance' in c: del c['bot_instance']
             clean_tasks.append(c)
         return clean_tasks
     except:
         return []
+
+@app.get("/events")
+async def sse_endpoint():
+    async def event_generator():
+        last_log_idx = 0
+        last_task_hash = ""
+        while True:
+            # 1. Check for logs
+            all_logs = list(log_handler.logs)
+            if len(all_logs) > last_log_idx:
+                new_logs = all_logs[last_log_idx:]
+                last_log_idx = len(all_logs)
+                yield f"event: logs\ndata: {json.dumps({'logs': new_logs})}\n\n"
+            
+            # 2. Check for tasks
+            try:
+                tasks = []
+                for t in list(tm.tasks):
+                    # 只序列化非内部字段（不以 _ 开头），避免 datetime 等不可序列化对象
+                    c = {k: v for k, v in t.items() if not k.startswith('_')}
+                    if 'bot_instance' in c: del c['bot_instance']
+                    tasks.append(c)
+                
+                task_json = json.dumps(tasks, sort_keys=True)
+                task_hash = hashlib.md5(task_json.encode()).hexdigest()
+                
+                if task_hash != last_task_hash:
+                    last_task_hash = task_hash
+                    yield f"event: tasks\ndata: {task_json}\n\n"
+            except Exception as e:
+                logging.error(f"SSE task gathering error: {e}")
+            
+            # 3. Heartbeat / Keep-alive
+            yield ": heartbeat\n\n"
+            await asyncio.sleep(0.8)
+            
+    return StreamingResponse(event_generator(), media_type="text/event-stream")
+
+@app.post("/test_notification")
+async def test_notification():
+    notifier.notify("🔔 HDU 抢座助手测试", "看到这条消息说明通知配置成功！")
+    return {"status": "sent"}
+
+@app.post("/update_config")
+async def update_config(data: dict):
+    # 动态更新 config 中的 Key
+    if "bark_key" in data:
+        import config
+        config.BARK_KEY = data["bark_key"]
+    if "sckey" in data:
+        import config
+        config.SCKEY = data["sckey"]
+    return {"status": "updated"}
 
 @app.post("/add_task")
 async def add_task(data: TaskItem):

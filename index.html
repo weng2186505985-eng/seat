@@ -411,6 +411,16 @@
                     </div>
                 </div>
 
+                <div class="divider"></div>
+                <div class="input-group">
+                    <label>通知配置 (Bark / ServerChan)</label>
+                    <input type="text" id="bark_key" placeholder="Bark Key (可选)" style="margin-bottom: 8px;">
+                    <input type="text" id="sckey" placeholder="ServerChan Key (可选)">
+                    <button class="btn btn-ghost" onclick="testNotify()" style="margin-top: 4px; justify-content: flex-start; padding-left: 0;">
+                        <span>🔔 点击测试推送</span>
+                    </button>
+                </div>
+
                 <button class="btn btn-primary" id="btnAdd" onclick="addTask()">
                     <span>🚀 添加新任务</span>
                 </button>
@@ -476,7 +486,8 @@
             if (selectedDate === todayFull) {
                 isRealtime = true;
                 document.getElementById('log-realtime-status').style.display = 'flex';
-                fetchTasks(); // Trigger refresh
+                // Trigger an immediate fetch for the current state when switching back to today
+                fetchTasks();
             } else {
                 isRealtime = false;
                 document.getElementById('log-realtime-status').style.display = 'none';
@@ -529,11 +540,19 @@
         loadHalls();
 
         // Storage Logic
-        const FIELDS = ['username', 'seatRange', 'triggerTime'];
+        const FIELDS = ['username', 'seatRange', 'triggerTime', 'bark_key', 'sckey'];
         FIELDS.forEach(id => {
             const val = localStorage.getItem('hdu_v4_' + id);
-            if(val) document.getElementById(id).value = val;
-            document.getElementById(id).oninput = e => localStorage.setItem('hdu_v4_' + id, e.target.value);
+            if(val) {
+                document.getElementById(id).value = val;
+                // 初始化同步到后端
+                if(id === 'bark_key' || id === 'sckey') updateNotifyConfig(id, val);
+            }
+            document.getElementById(id).oninput = e => {
+                const newVal = e.target.value;
+                localStorage.setItem('hdu_v4_' + id, newVal);
+                if(id === 'bark_key' || id === 'sckey') updateNotifyConfig(id, newVal);
+            };
         });
         
         // 密码不持久化存储，仅从 localStorage 尝试恢复上次（如果之前存过），但不再新存
@@ -714,25 +733,81 @@
             await fetch('/book_now', { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(data) });
         }
 
+        async function updateNotifyConfig(type, val) {
+            const data = {};
+            data[type] = val;
+            await fetch('/update_config', { 
+                method: 'POST', 
+                headers: {'Content-Type': 'application/json'}, 
+                body: JSON.stringify(data) 
+            });
+        }
+
+        async function testNotify() {
+            const btn = event.currentTarget;
+            const originalText = btn.innerHTML;
+            btn.disabled = true;
+            btn.innerText = "正在发送...";
+            try {
+                await fetch('/test_notification', { method: 'POST' });
+                btn.innerText = "已发送！";
+            } catch(e) {
+                btn.innerText = "发送失败";
+            }
+            setTimeout(() => { btn.innerHTML = originalText; btn.disabled = false; }, 2000);
+        }
+
         let lastLogIdx = 0;
         let isRealtime = true;
 
-        setInterval(async () => {
-            if (!isRealtime) return;
-            try {
-                const r = await fetch(`/get_logs?last_index=${lastLogIdx}`);
-                const data = await r.json();
-                if(data.logs?.length > 0) {
-                    appendLogs(data.logs);
-                    lastLogIdx = data.last_index;
-                    const container = document.getElementById('logContainer');
-                    if(container.children.length > 500) for(let i=0; i<100; i++) container.removeChild(container.firstChild);
-                }
-            } catch(e) {}
-        }, 1200);
+        // SSE Implementation
+        function initSSE() {
+            const statusDot = document.querySelector('#connection-status .dot');
+            const statusText = document.querySelector('#connection-status').childNodes[2];
 
-        setInterval(fetchTasks, 3000);
-        fetchTasks();
+            const eventSource = new EventSource('/events');
+
+            eventSource.onopen = () => {
+                console.log("SSE connection established");
+                statusDot.style.background = 'var(--secondary)';
+                statusText.textContent = ' 系统实时同步中';
+            };
+
+            eventSource.onerror = (err) => {
+                console.error("SSE connection error", err);
+                statusDot.style.background = 'var(--danger)';
+                statusText.textContent = ' 连接断开 (重连中...)';
+                // EventSource automatically reconnects, but we update the UI
+            };
+
+            eventSource.addEventListener('tasks', (e) => {
+                try {
+                    const tasks = JSON.parse(e.data);
+                    renderTasks(tasks);
+                } catch(err) {
+                    console.error("Failed to parse tasks SSE data", err);
+                }
+            });
+
+            eventSource.addEventListener('logs', (e) => {
+                if (!isRealtime) return;
+                try {
+                    const data = JSON.parse(e.data);
+                    if (data.logs?.length > 0) {
+                        appendLogs(data.logs);
+                        const container = document.getElementById('logContainer');
+                        if (container.children.length > 500) {
+                            for (let i = 0; i < 100; i++) container.removeChild(container.firstChild);
+                        }
+                    }
+                } catch(err) {
+                    console.error("Failed to parse logs SSE data", err);
+                }
+            });
+        }
+
+        initSSE();
+        fetchTasks(); // Initial load
     </script>
 </body>
 </html>

@@ -17,6 +17,7 @@ except ImportError:
 from playwright.sync_api import sync_playwright
 import config
 import logger_config
+import notifier
 
 logger = logging.getLogger(__name__)
 
@@ -94,28 +95,18 @@ class UltraFastBot:
         except: pass
 
     def notify(self, success, seat_name="", custom_msg="", custom_title=""):
-        """Server酱推送：异步发送，支持自定义标题 and 内容"""
-        if not config.SCKEY: return
+        """统一通知：调用 notifier 模块"""
+        # 优先级：自定义标题 > 默认成功/失败标题
+        title = custom_title if custom_title else ("🎉 HDU 抢座成功！" if success else "❌ HDU 抢座最终失败")
         
-        def _send():
-            url = f"https://sctapi.ftqq.com/{config.SCKEY}.send"
-            # 优先级：自定义标题 > 默认成功/失败标题
-            title = custom_title if custom_title else ("🎉 HDU 抢座成功！" if success else "❌ HDU 抢座最终失败")
-            
-            if custom_msg:
-                content = custom_msg
-            elif success:
-                content = f"座位：{seat_name}\n日期：{datetime.datetime.now().strftime('%Y-%m-%d')}"
-            else:
-                content = "连续多次尝试均未抢到目标座位。"
-            
-            try:
-                requests.post(url, data={"title": title, "desp": content}, timeout=5)
-            except Exception as e:
-                logger.error(f"⚠️ 推送失败: {e}")
+        if custom_msg:
+            content = custom_msg
+        elif success:
+            content = f"座位：{seat_name}\n日期：{datetime.datetime.now().strftime('%Y-%m-%d')}"
+        else:
+            content = "连续多次尝试均未抢到目标座位。"
         
-        # 开启守护线程发送，绝不阻塞主业务逻辑
-        threading.Thread(target=_send, daemon=True).start()
+        notifier.notify(title, content)
 
     def refresh_credentials(self, username, password):
         """

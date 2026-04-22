@@ -192,7 +192,8 @@ class TaskManager:
         with self.lock:
             save_data = []
             for t in self.tasks:
-                c = t.copy()
+                # 🎯 关键修复：排除以 _ 开头的内部字段（如 _trigger_dt），避免 datetime 对象导致序列化失败
+                c = {k: v for k, v in t.items() if not k.startswith('_')}
                 if 'bot_instance' in c: del c['bot_instance']
                 save_data.append(c)
         
@@ -472,7 +473,7 @@ class TaskManager:
         """
         获取当前线程的浏览器实例
         修复 Bug #2: Playwright sync_api 不支持多线程跨线程调用 context/page
-        通过 threading.local 确保每个线程拥有独立的 Playwright 实例和浏览器
+        通过 threading.local 确保每个线程拥有独立的 Playwright 实例 and 浏览器
         """
         from playwright.sync_api import sync_playwright
         if not hasattr(self._local, 'pw'):
