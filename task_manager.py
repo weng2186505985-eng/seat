@@ -22,6 +22,11 @@ class TaskManager:
         self.time_offset = 0 
         self.avg_rtt = 0.05 # 默认假设 50ms
         self.last_sync_time = 0
+        self.firing_events = {} # {trigger_ts: threading.Event()} 🎯 统一发令枪池
+        
+        # 🎯 浏览器实例池 (共享引擎，隔离 Context)
+        self._pw_instance = None
+        self._browser = None
         self.last_blacklist_clear_date = "" # 记录上次清空黑名单的日期
         
         self.seat_map = {}
@@ -353,19 +358,30 @@ class TaskManager:
                 logger.warning(f"⚠️ 账号 {u} 预热失败，已重置相关任务状态")
         threading.Thread(target=_worker, daemon=True).start()
 
-    def _run_task_snatch(self, task, skip_refresh, trigger_ts):
+    def _run_task_snatch(self, task, skip_refresh, t_ts):
         def _worker():
-            trace_id = f"SNATCH-{uuid.uuid4().hex[:8]}"
-            logger_config.set_trace_id(trace_id)
-            u = task['username']
-            with self.lock:
-                bot = self._get_bot(u)
+            bot = self._get_bot(task['username'])
+            
+            # 🎯 统一发令枪逻辑
+            firing_event = None
+            if t_ts:
+                with self.lock:
+                    if t_ts not in self.firing_events:
+                        self.firing_events[t_ts] = threading.Event()
+                        # 启动一个专门的计时线程负责发令
+                        rtt = 0.05
+                        target_local = t_ts - self.time_offset - (rtt / 2) + 0.02
+                        threading.Thread(target=self._trigger_firing_event, args=(t_ts, target_local), daemon=True).start()
+                    firing_event = self.firing_events[t_ts]
+
             params = {
-                "username": u, "password": task['password'], "floor": task['floor'],
-                "seat_list": task['seat_list'], "date_offset": task['dateOffset'],
-                "start_time": task['startTime'], "end_time": task['endTime'],
-                "trigger_ts": trigger_ts, "rtt": self.avg_rtt, "time_offset": self.time_offset,
-                "preferred_seat": task.get('preferred_seat'),
+                "username": task['username'], "password": task['password'],
+                "floor": task['floor'], "seat_list": task['seat_list'],
+                "seat_display": task['seat_display'],
+                "date_offset": task['dateOffset'], "start_time": task['startTime'], "end_time": task['endTime'],
+                "trigger_ts": t_ts, "time_offset": self.time_offset, "rtt": 0.05,
+                "preferred_seat": task.get('preferred_seat', ""),
+                "firing_event": firing_event,
                 "synced_now": datetime.datetime.fromtimestamp(time.time() + self.time_offset)
             }
             
@@ -412,6 +428,31 @@ class TaskManager:
                 self._log_structured_event(task, success)
             self.save_tasks()
 
+    def _trigger_firing_event(self, t_ts, target_local):
+        """精准发令：由单一线程控制时间，触发该时刻的所有并发任务"""
+        wait_time = target_local - time.time()
+        if wait_time > 0:
+            if wait_time > 0.05:
+                time.sleep(wait_time - 0.02)
+            # 最后 20ms 微秒级等待
+            while time.time() < target_local:
+                time.sleep(0.001)
+        
+        with self.lock:
+            if t_ts in self.firing_events:
+                self.firing_events[t_ts].set()
+                # 1秒后清理，给所有线程留够反应时间
+                threading.Timer(1.0, lambda: self.firing_events.pop(t_ts, None)).start()
+
+    def get_shared_browser(self):
+        """获取共享浏览器实例 (实现 Browser Pool)"""
+        from playwright.sync_api import sync_playwright
+        with self.lock:
+            if not self._pw_instance:
+                self._pw_instance = sync_playwright().start()
+                self._browser = self._pw_instance.chromium.launch(headless=True)
+            return self._browser
+
     def _log_structured_event(self, task, success):
         """记录结构化 JSON 日志用于后期统计"""
         log_dir = "logs"
@@ -433,4 +474,3 @@ class TaskManager:
             with open(stats_file, "a", encoding="utf-8") as f:
                 f.write(json.dumps(event, ensure_ascii=False) + "\n")
         except: pass
-        threading.Thread(target=_worker, daemon=True).start()
