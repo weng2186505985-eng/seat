@@ -9,6 +9,7 @@ import re
 import random
 import threading
 import concurrent.futures
+import queue
 from playwright.sync_api import sync_playwright
 import config
 import logger_config
@@ -220,7 +221,7 @@ class UltraFastBot:
             random.shuffle(seat_list)
 
         success_event = threading.Event()
-        success_name = [""]
+        success_name_q = queue.Queue(maxsize=1) # 使用线程安全队列存储成功的座位号
         current_trace_id = logger_config.get_trace_id()
 
         # 预先快照状态，减少锁竞争
@@ -267,7 +268,8 @@ class UltraFastBot:
                         
                         if "成功" in msg:
                             logger.info(f"🎉 SUCCESS: Seat {name} reserved! (Server: {msg})")
-                            success_name[0] = name
+                            try: success_name_q.put_nowait(name)
+                            except: pass
                             success_event.set()
                             return True
                         elif any(kw in msg for kw in ["已经预约", "已有预约", "已经有", "已有"]):
@@ -275,7 +277,8 @@ class UltraFastBot:
                             # 只有在还没有其他线程宣布成功时，才将此座位记录为成功座位
                             if not success_event.is_set():
                                 logger.info(f"✅ SUCCESS: Account already has a reservation. (Target: {name}, Server: {msg})")
-                                success_name[0] = name
+                                try: success_name_q.put_nowait(name)
+                                except: pass
                                 success_event.set()
                             else:
                                 logger.debug(f"ℹ️ Seat {name} reported 'already reserved', likely another thread won.")
@@ -317,7 +320,7 @@ class UltraFastBot:
         
         if success_event.is_set():
             # 修改通知描述，包含场馆和日期
-            s_name = success_name[0]
+            s_name = success_name_q.get_nowait() if not success_name_q.empty() else "未知"
             desc = f"座位：{s_name}\n场馆：{hall}\n日期：{target_date}"
             self.notify(True, seat_name=s_name, custom_msg=desc) 
             return s_name # 返回具体座位号

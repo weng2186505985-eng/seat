@@ -163,21 +163,24 @@ class TaskManager:
         return []
 
     def save_tasks(self):
+        # 1. 锁内仅做快照，确保存储数据的一致性
         with self.lock:
             save_data = []
             for t in self.tasks:
                 c = t.copy()
                 if 'bot_instance' in c: del c['bot_instance']
                 save_data.append(c)
-            tmp_file = self.tasks_file + ".tmp"
-            try:
-                with open(tmp_file, "w", encoding="utf-8") as f:
-                    json.dump(save_data, f, ensure_ascii=False, indent=2)
-                    f.flush()
-                    os.fsync(f.fileno())
-                os.replace(tmp_file, self.tasks_file)
-            except Exception as e:
-                logger.error(f"❌ 保存任务列表失败: {e}")
+        
+        # 2. 锁外执行 IO 操作，防止磁盘 fsync 阻塞抢座时刻的 CPU 循环
+        tmp_file = self.tasks_file + ".tmp"
+        try:
+            with open(tmp_file, "w", encoding="utf-8") as f:
+                json.dump(save_data, f, ensure_ascii=False, indent=2)
+                f.flush()
+                os.fsync(f.fileno())
+            os.replace(tmp_file, self.tasks_file)
+        except Exception as e:
+            logger.error(f"❌ 保存任务列表失败: {e}")
 
     def _get_bot(self, username):
         if username not in self.user_bots:
@@ -305,7 +308,7 @@ class TaskManager:
                         trigger_ts = t_time.timestamp()
                         was_ready = (task['status'] == "ready")
                         task['status'] = "snatching"
-                        tasks_to_snatch.append((task, was_ready, trigger_ts))
+                        tasks_to_snatch.append((task.copy(), was_ready, trigger_ts))
 
             for task in tasks_to_warmup: self._run_task_warmup(task)
             for task, skip, t_ts in tasks_to_snatch: self._run_task_snatch(task, skip, t_ts)
