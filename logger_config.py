@@ -63,6 +63,8 @@ def setup_logging(level=logging.INFO):
 
     # 为所有已有的 handler 设置新的 Formatter (包括 GUI 的)
     for handler in root_logger.handlers:
+        # 🎯 修复 Bug #9: 跳过需要保持简洁格式的 LogQueueHandler
+        if getattr(handler, 'skip_trace_formatter', False): continue
         handler.setFormatter(formatter)
 
     # 错误日志也改为按天切割

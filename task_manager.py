@@ -240,7 +240,21 @@ class TaskManager:
 
     def delete_task(self, task_id):
         with self.lock:
+            # 找到要删除的任务的用户名
+            username = None
+            for t in self.tasks:
+                if t['id'] == task_id:
+                    username = t['username']
+                    break
+            
             self.tasks = [t for t in self.tasks if t['id'] != task_id]
+            
+            # 🎯 修复 Bug #5: 如果该账号已无其他任务，清理 bot 实例释放内存
+            if username and not any(t['username'] == username for t in self.tasks):
+                if username in self.user_bots:
+                    del self.user_bots[username]
+                    logger.info(f"🧹 Cleaned up bot instance for {username} (no remaining tasks)")
+        
         self.save_tasks()
 
 
@@ -313,7 +327,8 @@ class TaskManager:
 
             for task in tasks_to_warmup: self._run_task_warmup(task)
             for task, skip, t_ts in tasks_to_snatch: self._run_task_snatch(task, skip, t_ts)
-            time.sleep(0.5)
+            # 🎯 修复高危 Bug #1: 缩短轮询间隔，防止错过抢座的最佳触发时间
+            time.sleep(0.05) 
 
     def _run_task_warmup(self, task):
         def _worker():

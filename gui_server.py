@@ -22,6 +22,7 @@ class LogQueueHandler(logging.Handler):
         super().__init__()
         # 使用 deque 实现线程安全的列表操作
         self.logs = deque(maxlen=maxlen)
+        self.skip_trace_formatter = True # 🎯 修复 Bug #9: 标记跳过全局格式化
         
     def emit(self, record):
         if record.name.startswith("uvicorn"):
@@ -59,6 +60,7 @@ class TaskItem(BaseModel):
     endTime: str
     dateOffset: int
     triggerTime: str
+    preferred_seat: Optional[str] = ""
     recurring: Optional[bool] = False
 
 @app.get("/", response_class=HTMLResponse)
@@ -147,14 +149,16 @@ async def delete_task(task_id: str):
 
 @app.post("/book_now")
 async def book_now(data: TaskItem):
+    import datetime
     def _run():
         try:
             bot = UltraFastBot()
-            seat_list = tm._build_seat_list(data.floor, data.seatRange)
+            seat_list = tm._build_seat_list(data.floor, data.seatRange, data.preferred_seat)
             params = {
                 "username": data.username, "password": data.password,
                 "floor": data.floor, "seat_list": seat_list,
-                "date_offset": data.dateOffset, "start_time": data.startTime, "end_time": data.endTime
+                "date_offset": data.dateOffset, "start_time": data.startTime, "end_time": data.endTime,
+                "synced_now": datetime.datetime.fromtimestamp(time.time() + tm.time_offset)
             }
             bot.snatch_action(params)
         except Exception as e:

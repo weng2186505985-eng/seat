@@ -315,6 +315,7 @@ class UltraFastBot:
                                 with self.state_lock:
                                     self.blacklist.add(name)
                                 logger.info(f"📍 【{name}号】不可用: {msg}")
+                            return False # 🎯 修复 Bug #8: 被占用了直接退出，不用再 retry 第二轮
                         else:
                             with stats_lock: fail_stats["other"] += 1
                             # 记录其他未定义的服务器响应
@@ -345,6 +346,9 @@ class UltraFastBot:
                     time.sleep(0.01)
                     
             concurrent.futures.wait(futures) 
+            # 🎯 优化 Bug #4: 如果已经成功，尝试取消掉线程池中还没开始的任务
+            if success_event.is_set():
+                executor.shutdown(wait=False, cancel_futures=True)
         
         if success_event.is_set():
             # 修改通知描述，包含场馆和日期
