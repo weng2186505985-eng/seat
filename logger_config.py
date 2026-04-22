@@ -20,7 +20,15 @@ class TraceFormatter(logging.Formatter):
         record.trace_id = get_trace_id()
         return super().format(record)
 
+_initialized = False
+_log_lock = threading.Lock()
+
 def setup_logging(level=logging.INFO):
+    global _initialized
+    with _log_lock:
+        if _initialized:
+            return
+        _initialized = True
     log_dir = "logs"
     if not os.path.exists(log_dir):
         os.makedirs(log_dir)

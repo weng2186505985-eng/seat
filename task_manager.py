@@ -23,6 +23,7 @@ class TaskManager:
         self.avg_rtt = 0.05 # 默认假设 50ms
         self.last_sync_time = 0
         self.firing_events = {} # {trigger_ts: threading.Event()} 🎯 统一发令枪池
+        self.stats_lock = threading.Lock() # 🎯 结构化日志写入锁
         
         self._local = threading.local()
         self.last_blacklist_clear_date = "" # 记录上次清空黑名单的日期
@@ -208,7 +209,7 @@ class TaskManager:
 
     def _get_bot(self, username):
         if username not in self.user_bots:
-            self.user_bots[username] = UltraFastBot()
+            self.user_bots[username] = UltraFastBot(browser_provider=self.get_shared_browser)
         return self.user_bots[username]
 
     def add_task(self, data):
@@ -281,7 +282,6 @@ class TaskManager:
         
         self.save_tasks()
 
-
     def _scheduler_loop(self):
         while self.running:
             now_ts = time.time() + self.time_offset
@@ -290,13 +290,13 @@ class TaskManager:
             
             tasks_to_warmup = []
             tasks_to_snatch = []
+            needs_save = False
 
             with self.lock:
-                # 1. 预计算状态集合，将复杂度从 O(n^2) 降为 O(n)
+                # 1. 预计算状态集合
                 ready_users = {t['username'] for t in self.tasks if t['status'] == 'ready'}
                 warming_users = {t['username'] for t in self.tasks if t['status'] == 'warming'}
                 
-                # 修复：每天全局只清空一次黑名单，而不是依赖 last_run_date
                 if self.last_blacklist_clear_date != today_str:
                     logger.info(f"New day detected {today_str}, resetting global state...")
                     for bot_instance in self.user_bots.values():
@@ -304,7 +304,7 @@ class TaskManager:
                     self.last_blacklist_clear_date = today_str
 
                 for task in self.tasks:
-                    # 跨天自动重置任务状态：仅针对已结束（完成或失败）的任务
+                    # 跨天自动重置任务状态
                     if task.get('last_run_date') != today_str:
                         if task['status'] in ['completed', 'failed']:
                             old_status = task['status']
@@ -314,51 +314,46 @@ class TaskManager:
                             # 重新加载座位列表（防止黑名单变动）
                             bot = self._get_bot(task['username'])
                             task['seat_list'] = self._build_seat_list(task['floor'], task['seat_display'], task.get('preferred_seat', ""), bot)
-                            # 强制保存一次，确保重启后状态正确
-                            try:
-                                self.save_tasks()
-                            except Exception as e:
-                                logger.error(f"Error saving tasks during reset: {e}")
+                            needs_save = True
 
-                    # 跳过已完成且非循环的任务
                     if task['status'] in ['completed', 'failed'] and not task.get('recurring'): continue
-                    
                     if task.get('last_run_date') == today_str: continue
 
-                    # 🎯 性能优化：缓存字符串解析结果，减少持锁时间
                     if '_trigger_dt' not in task or task.get('_trigger_raw') != task['triggerTime']:
                         task['_trigger_dt'] = datetime.datetime.strptime(task['triggerTime'], "%H:%M:%S")
                         task['_trigger_raw'] = task['triggerTime']
                     
                     t_time = task['_trigger_dt'].replace(year=now.year, month=now.month, day=now.day)
-                    
                     if now > t_time + datetime.timedelta(minutes=2):
                         t_time += datetime.timedelta(days=1)
                     
                     diff = (t_time - now).total_seconds()
 
-                    # 状态机：waiting -> warming -> ready -> snatching
                     if 0 < diff < 900 and task['status'] == "waiting":
                         task['status'] = "warming"
+                        needs_save = True
                         if task['username'] not in ready_users and task['username'] not in warming_users:
                             tasks_to_warmup.append(task)
                             warming_users.add(task['username'])
                     
                     elif task['status'] == 'warming' and task['username'] in ready_users:
                         task['status'] = 'ready'
+                        needs_save = True
 
                     if diff <= 2 and task['status'] in ["waiting", "warming", "ready"]:
                         trigger_ts = t_time.timestamp()
                         was_ready = (task['status'] == "ready")
                         if not was_ready and task['status'] == "waiting":
-                            logger.warning(f"⚠️ 任务 {task['id']} 跳过预热直接进入抢座，发包可能会延迟")
+                            logger.warning(f"⚠️ 任务 {task['id']} 跳过预热直接进入抢座")
                         task['status'] = "snatching"
-                        # 🎯 修复 Bug #3: 移除 .copy()，确保状态更新能写回 self.tasks 并被持久化
                         tasks_to_snatch.append((task, was_ready, trigger_ts))
+                        needs_save = True
+
+            if needs_save:
+                self.save_tasks()
 
             for task in tasks_to_warmup: self._run_task_warmup(task)
             for task, skip, t_ts in tasks_to_snatch: self._run_task_snatch(task, skip, t_ts)
-            # 🎯 修复高危 Bug #1: 缩短轮询间隔，防止错过抢座的最佳触发时间
             time.sleep(0.05) 
 
     def _run_task_warmup(self, task):
@@ -453,22 +448,25 @@ class TaskManager:
                 # 记录结构化日志
                 self._log_structured_event(task, success)
             self.save_tasks()
+        threading.Thread(target=_worker, daemon=True).start()
 
     def _trigger_firing_event(self, t_ts, target_local):
         """精准发令：由单一线程控制时间，触发该时刻的所有并发任务"""
-        wait_time = target_local - time.time()
-        if wait_time > 0:
-            if wait_time > 0.05:
-                time.sleep(wait_time - 0.02)
-            # 最后 20ms 微秒级等待
-            while time.time() < target_local:
-                time.sleep(0.001)
-        
-        with self.lock:
-            if t_ts in self.firing_events:
-                self.firing_events[t_ts].set()
-                # 1秒后清理，给所有线程留够反应时间
-                threading.Timer(1.0, lambda: self.firing_events.pop(t_ts, None)).start()
+        try:
+            wait_time = target_local - time.time()
+            if wait_time > 0:
+                if wait_time > 0.05:
+                    time.sleep(wait_time - 0.02)
+                # 最后 20ms 微秒级等待
+                while time.time() < target_local:
+                    time.sleep(0.001)
+            
+            with self.lock:
+                if t_ts in self.firing_events:
+                    self.firing_events[t_ts].set()
+        finally:
+            # 确保无论如何 1秒后清理，给所有线程留够反应时间
+            threading.Timer(1.0, lambda: self.firing_events.pop(t_ts, None)).start()
 
     def get_shared_browser(self):
         """
@@ -507,6 +505,7 @@ class TaskManager:
                 os.rename(stats_file, archive_name)
                 logger.info(f"📦 stats.json 已轮转归档为 {archive_name}")
             
-            with open(stats_file, "a", encoding="utf-8") as f:
-                f.write(json.dumps(event, ensure_ascii=False) + "\n")
+            with self.stats_lock:
+                with open(stats_file, "a", encoding="utf-8") as f:
+                    f.write(json.dumps(event, ensure_ascii=False) + "\n")
         except: pass

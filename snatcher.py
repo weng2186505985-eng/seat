@@ -40,7 +40,11 @@ class UltraFastBot:
         
         # 🎯 curl_cffi 指纹伪装 (impersonate chrome/safari)
         if hasattr(self.session, "impersonate"):
-            self.session.impersonate = "safari15_5" 
+            self.session.impersonate = "safari15_5"
+            # 如果使用了 impersonate，curl_cffi 会自动管理 UA，我们标记一下
+            self._ua_managed_by_cffi = True
+        else:
+            self._ua_managed_by_cffi = False
             
         self.api_token = ""
         self.user_id = ""
@@ -63,6 +67,10 @@ class UltraFastBot:
         if not hasattr(self._thread_local, 'session'):
             s = cffi_requests.Session()
             s.impersonate = "safari15_5"
+            # 同样应用连接池配置
+            adapter = HTTPAdapter(pool_connections=10, pool_maxsize=10)
+            s.mount("https://", adapter)
+            s.mount("http://", adapter)
             self._thread_local.session = s
         return self._thread_local.session
 
@@ -297,10 +305,12 @@ class UltraFastBot:
                         current_headers = {
                             "api-token": snap_token,
                             "Cookie": snap_cookies,
-                            "User-Agent": self.fixed_ua,
                             "Referer": "https://hdu.huitu.zhishulib.com/",
                             "X-Requested-With": "XMLHttpRequest"
                         }
+                        # 只有在非 cffi 模式或 UA 未被自动管理时才手动注入 UA
+                        if not self._ua_managed_by_cffi:
+                            current_headers["User-Agent"] = self.fixed_ua
 
                         if attempt == 0: 
                             time.sleep(random.uniform(0.01, 0.05))
@@ -382,9 +392,11 @@ class UltraFastBot:
                     time.sleep(0.01)
                     
             concurrent.futures.wait(futures) 
-            # 🎯 优化 Bug #4: 如果已经成功，尝试取消掉线程池中还没开始的任务
+            # 🎯 修复 Bug #4: 手动取消未完成的任务（兼容 Python 3.8）
             if success_event.is_set():
-                executor.shutdown(wait=False, cancel_futures=True)
+                for f in futures:
+                    if not f.done():
+                        f.cancel()
         
         if success_event.is_set():
             # 修改通知描述，包含场馆和日期

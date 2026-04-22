@@ -529,12 +529,20 @@
         loadHalls();
 
         // Storage Logic
-        const FIELDS = ['username', 'password', 'seatRange', 'triggerTime'];
+        const FIELDS = ['username', 'seatRange', 'triggerTime'];
         FIELDS.forEach(id => {
             const val = localStorage.getItem('hdu_v4_' + id);
             if(val) document.getElementById(id).value = val;
             document.getElementById(id).oninput = e => localStorage.setItem('hdu_v4_' + id, e.target.value);
         });
+        
+        // 密码不持久化存储，仅从 localStorage 尝试恢复上次（如果之前存过），但不再新存
+        const savedPass = localStorage.getItem('hdu_v4_password');
+        if(savedPass) {
+            document.getElementById('password').value = savedPass;
+            // 提醒用户清理旧数据
+            console.warn("Detected legacy password in localStorage. It is recommended to clear browser data for security.");
+        }
 
         function getStatusInfo(status) {
             status = status.toLowerCase();

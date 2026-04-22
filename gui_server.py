@@ -153,19 +153,29 @@ async def delete_task(task_id: str):
 @app.post("/book_now")
 async def book_now(data: TaskItem):
     import datetime
+    if not tm: return {"status": "error", "message": "系统未就绪"}
+    
     def _run():
         try:
-            bot = UltraFastBot()
-            seat_list = tm._build_seat_list(data.floor, data.seatRange, data.preferred_seat)
+            # 🎯 修复 Bug #5: 复用 TaskManager 的 Bot 池，避免独立实例化和进程泄露
+            with tm.lock:
+                bot = tm._get_bot(data.username)
+            
+            seat_list = tm._build_seat_list(data.floor, data.seatRange, data.preferred_seat, bot)
             params = {
                 "username": data.username, "password": data.password,
                 "floor": data.floor, "seat_list": seat_list,
+                "seat_display": data.seatRange,
                 "date_offset": data.dateOffset, "start_time": data.startTime, "end_time": data.endTime,
-                "synced_now": datetime.datetime.fromtimestamp(time.time() + tm.time_offset)
+                "synced_now": datetime.datetime.fromtimestamp(time.time() + tm.time_offset),
+                "time_offset": tm.time_offset,
+                "rtt": 0.05
             }
+            # 直接触发抢座逻辑
             bot.snatch_action(params)
         except Exception as e:
             logging.error(f"立即抢座执行异常: {e}")
+            
     threading.Thread(target=_run, daemon=True).start()
     return {"status": "processing"}
 
