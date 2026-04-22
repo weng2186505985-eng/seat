@@ -32,29 +32,9 @@ class UltraFastBot:
         self.state_lock = threading.Lock()
         self.blacklist = set()
 
-    # --- 浏览器资源复用 (单例模式) ---
-    _p_instance = None
-    _browser_process = None
-    _resource_lock = threading.Lock()
-
-    @classmethod
-    def get_browser(cls):
-        """复用同一个 Chromium 进程，极大地节省本地 CPU 和内存"""
-        with cls._resource_lock:
-            if cls._browser_process is None:
-                cls._p_instance = sync_playwright().start()
-                cls._browser_process = cls._p_instance.chromium.launch(headless=True)
-                logger.info("🎨 系统浏览器进程已启动")
-            return cls._browser_process
-
-    @classmethod
-    def close_browser(cls):
-        with cls._resource_lock:
-            if cls._browser_process:
-                cls._browser_process.close()
-                cls._p_instance.stop()
-                cls._browser_process = None
-                logger.info("🛑 系统浏览器进程已关闭")
+    # --- 浏览器资源管理 ---
+    # 移除原本不符合线程安全规范的全局单例浏览器，改为在每个凭证刷新任务中独立启动
+    # 虽然启动浏览器有一定开销，但在多账号并发场景下，这能彻底避免 greenlet 跨线程切换导致的崩溃问题。
 
     def clear_blacklist(self):
         """每日重置黑名单，确保循环任务不会逐日缩减可用池"""
@@ -63,7 +43,7 @@ class UltraFastBot:
             logger.info("Blacklist cleared for a new attempt.")
 
     def notify(self, success, seat_name="", custom_msg="", custom_title=""):
-        """Server酱推送：异步发送，支持自定义标题和内容"""
+        """Server酱推送：异步发送，支持自定义标题 and 内容"""
         if not config.SCKEY: return
         
         def _send():
@@ -87,65 +67,113 @@ class UltraFastBot:
         threading.Thread(target=_send, daemon=True).start()
 
     def refresh_credentials(self, username, password):
+        """
+        同步登录凭证：使用独立浏览器进程获取 Cookie 和 Token
+        修复了原有的 Playwright 多线程 greenlet 报错
+        """
         logger.info(f"📡 正在为账号 {username} 同步凭证...")
         try:
-            browser = self.get_browser()
-            iphone = self._p_instance.devices['iPhone 14']
-            
-            with browser.new_context(**iphone) as context:
-                page = context.new_page()
-                page.goto("https://hdu.huitu.zhishulib.com/User/Index/hduCASLogin")
-                page.wait_for_timeout(random.randint(1000, 2000))
-                
+            # 必须在当前线程启动 playwright 以保证 thread-safety
+            with sync_playwright() as p:
+                iphone = p.devices['iPhone 14']
+                # 显式启动浏览器，并在 context 结束后自动销毁
+                browser = p.chromium.launch(headless=True)
                 try:
-                    # 自动填写登录
-                    user_input = page.get_by_placeholder(re.compile(r"学工号|账号"))
-                    pass_input = page.get_by_placeholder(re.compile(r"密码"))
-                    user_input.fill(username)
-                    page.wait_for_timeout(random.randint(500, 1200))
-                    pass_input.fill(password)
-                    page.wait_for_timeout(random.randint(500, 1200))
-                    pass_input.press("Enter")
-                    
-                    # 等待跳转成功
-                    page.wait_for_url("**/Category/list**", timeout=15000)
-                    page.wait_for_timeout(2000) # 等待 localStorage 写入
-                    
-                    # --- 多方案凭证提取 ---
-                    # 方案 1: 从 localStorage 提取 (针对 Vue/React 应用)
-                    token_value = page.evaluate("window.localStorage.getItem('token') || window.localStorage.getItem('api-token')")
-                    uid_value = page.evaluate("window.localStorage.getItem('uid') || window.localStorage.getItem('userId')")
-                    
-                    # 方案 2: 如果 localStorage 没有，尝试从页面源码正则提取 (传统方案)
-                    if not token_value or not uid_value:
-                        content = page.content()
-                        t_match = re.search(r'api-token["\']\s*:\s*["\']([^"\']+)["\']', content)
-                        u_match = re.search(r'uid["\']\s*:\s*["\'](\d+)["\']', content)
-                        token_value = token_value or (t_match.group(1) if t_match else None)
-                        uid_value = uid_value or (u_match.group(1) if u_match else None)
-                    
-                    with self.state_lock:
-                        if token_value: self.api_token = token_value
-                        else: logger.error(f"❌ 账号 {username} 未能在页面中找到 api-token")
+                    with browser.new_context(**iphone) as context:
+                        page = context.new_page()
+                        page.goto("https://hdu.huitu.zhishulib.com/User/Index/hduCASLogin")
+                        # 随机等待模拟真人
+                        page.wait_for_timeout(random.randint(1000, 2000))
                         
-                        if uid_value: self.user_id = uid_value
-                        else: logger.error(f"❌ 账号 {username} 未能在页面中找到 uid")
+                        # 自动填写登录
+                        user_input = page.get_by_placeholder(re.compile(r"学工号|账号"))
+                        pass_input = page.get_by_placeholder(re.compile(r"密码"))
+                        user_input.fill(username)
+                        page.wait_for_timeout(random.randint(500, 1200))
+                        pass_input.fill(password)
+                        page.wait_for_timeout(random.randint(500, 1200))
+                        pass_input.press("Enter")
                         
-                        cookies = context.cookies()
-                        self.current_cookies = "; ".join([f"{c['name']}={c['value']}" for c in cookies])
+                        # 等待跳转成功
+                        page.wait_for_url("**/Category/list**", timeout=15000)
+                        page.wait_for_timeout(2000) # 等待 localStorage 写入
                         
-                        if token_value and uid_value:
-                            self.is_warmed_up = True
-                            return True
-                    return False
+                        # --- 多方案凭证提取 ---
+                        # 1. 深度扫描 localStorage
+                        token_value, uid_value = page.evaluate("""() => {
+                            let t = null, u = null;
+                            const keys = Object.keys(localStorage);
+                            
+                            // 优先尝试已知的大对象 Key (针对 Parse 框架等)
+                            const userObjKey = keys.find(k => k.includes('currentUser') || k.includes('user_info'));
+                            if (userObjKey) {
+                                try {
+                                    const data = JSON.parse(localStorage.getItem(userObjKey));
+                                    // Parse 框架通常使用 sessionToken
+                                    t = data.token || data.api_token || data.sessionToken || data.accessToken || data.apiToken;
+                                    u = data.uid || data.userId || data.id || data.user_id;
+                                    
+                                    // 调试：如果还是没找到，把这个对象的 key 打印出来
+                                    if (!t) console.log("Detected keys in userObj:", Object.keys(data));
+                                } catch(e) {}
+                            }
+
+                            // 如果还没找到，遍历所有 Key 查找
+                            if (!t || !u) {
+                                for (let k of keys) {
+                                    const val = localStorage.getItem(k);
+                                    if (!t && (k.toLowerCase().includes('token') || k.toLowerCase().includes('authorization'))) t = val;
+                                    if (!u && (k.toLowerCase().includes('uid') || k.toLowerCase().includes('userid'))) u = val;
+                                }
+                            }
+                            return [t, u];
+                        }""")
+                        
+                        if not token_value or not uid_value:
+                            # 2. 尝试从页面源码正则提取
+                            content = page.content()
+                            # 拓宽正则匹配范围，支持更多格式
+                            t_match = re.search(r'(?:api-token|token|access_token|Authorization)["\']\s*[:=]\s*["\']([^"\']+)["\']', content, re.I)
+                            u_match = re.search(r'(?:uid|userId|user_id|\"id\")["\']\s*[:=]\s*["\'](\d+)["\']', content, re.I)
+                            token_value = token_value or (t_match.group(1) if t_match else None)
+                            uid_value = uid_value or (u_match.group(1) if u_match else None)
+                        
+                        if not token_value:
+                            # 如果还是找不到，打印出所有的 localStorage key 帮助调试
+                            keys = page.evaluate("Object.keys(window.localStorage)")
+                            logger.warning(f"⚠️ 无法提取 token。当前 localStorage 中的 keys: {keys}")
+
+                        with self.state_lock:
+                            if token_value: 
+                                self.api_token = token_value
+                                logger.info(f"✅ 账号 {username} api-token 获取成功")
+                            else: 
+                                logger.error(f"❌ 账号 {username} 未能在页面中找到 api-token")
+                            
+                            if uid_value: 
+                                self.user_id = uid_value
+                                logger.info(f"✅ 账号 {username} uid 获取成功")
+                            else: 
+                                logger.error(f"❌ 账号 {username} 未能在页面中找到 uid")
+                            
+                            cookies = context.cookies()
+                            self.current_cookies = "; ".join([f"{c['name']}={c['value']}" for c in cookies])
+                            
+                            if token_value and uid_value:
+                                self.is_warmed_up = True
+                                return True
+                        return False
                 except Exception as e:
-                    page.screenshot(path=f"login_err_{username}.png")
-                    logger.error(f"❌ 账号 {username} 登录失败: {e}")
+                    try:
+                        # 只有在页面还存活时尝试截图
+                        page.screenshot(path=f"login_err_{username}.png")
+                    except: pass
+                    logger.error(f"❌ 账号 {username} 登录操作失败: {e}")
                     return False
                 finally:
-                    context.close()
+                    browser.close()
         except Exception as e:
-            logger.error(f"❌ 凭证同步异常 (Playwright): {e}", exc_info=True)
+            logger.error(f"❌ 凭证同步组件异常: {e}", exc_info=True)
             return False
 
     def snatch_action(self, task_params, skip_refresh=False):
@@ -158,12 +186,13 @@ class UltraFastBot:
         if trigger_ts:
             rtt = task_params.get('rtt', 0.05)
             offset = task_params.get('time_offset', 0)
-            # 目标本地时间 = 目标服务器时间 - 偏差 - (RTT/2)
-            target_local = trigger_ts - offset - (rtt / 2)
-            # 留一点点余量给后续的微小抖动
-            wait_time = target_local - time.time() - 0.01 
+            # 目标本地时间 = 目标服务器时间 - 偏差 - (RTT/2) + 0.02s(安全余量)
+            # 这里的余量由 0.1s 缩减到 0.02s 以提高精度，防止过晚提交。
+            target_local = trigger_ts - offset - (rtt / 2) + 0.02
+            
+            wait_time = target_local - time.time()
             if wait_time > 0:
-                logger.info(f"⏳ 正在精确等待打靶时刻... (预估等待 {wait_time:.3f}s)")
+                logger.info(f"⏳ 正在精确等待打靶时刻... (预估等待 {wait_time:.3f}s, 已包含0.1s余量)")
                 time.sleep(wait_time)
         else:
             time.sleep(random.uniform(0.1, 0.5))
@@ -236,15 +265,27 @@ class UltraFastBot:
 
                         msg = res_json.get('msg') or res_json.get('message') or str(res_json)
                         
-                        if any(kw in msg for kw in ["成功", "已经预约", "已有预约", "已经有", "已有"]):
-                            logger.info(f"SUCCESS: Seat {name} reserved! (Server: {msg})")
+                        if "成功" in msg:
+                            logger.info(f"🎉 SUCCESS: Seat {name} reserved! (Server: {msg})")
                             success_name[0] = name
                             success_event.set()
                             return True
+                        elif any(kw in msg for kw in ["已经预约", "已有预约", "已经有", "已有"]):
+                            # 如果检测到“已有预约”，说明此账号已搞定（可能是本线程或并行的其他线程成功的）
+                            # 只有在还没有其他线程宣布成功时，才将此座位记录为成功座位
+                            if not success_event.is_set():
+                                logger.info(f"✅ SUCCESS: Account already has a reservation. (Target: {name}, Server: {msg})")
+                                success_name[0] = name
+                                success_event.set()
+                            else:
+                                logger.debug(f"ℹ️ Seat {name} reported 'already reserved', likely another thread won.")
+                            return True
                         elif "频繁" in msg or "太快" in msg:
                             if attempt == 0:
-                                logger.warning(f"⏳ 【{name}号】操作频繁，等待重试...")
-                                time.sleep(1.5)
+                                # 进一步缩短间隔，并增加随机扰动防止被风控识别
+                                sleep_time = 0.5 + random.uniform(-0.1, 0.1)
+                                logger.warning(f"⏳ 【{name}号】操作频繁，等待 {sleep_time:.2f}s 后重试...")
+                                time.sleep(sleep_time)
                                 continue
                         elif any(kw in msg for kw in ["必须在预约人列表", "已被预约", "已被占用", "该时间段不可预约"]):
                             if not success_event.is_set(): # 修复 Bug #2: 只有在没人成功时才拉黑
@@ -269,6 +310,9 @@ class UltraFastBot:
             for item in seat_list:
                 if success_event.is_set(): break # 及时止损，不再提交新任务
                 futures.append(executor.submit(try_book, item))
+                # 如果是“昨日/首选”座位，给一个极短（10ms）的领先优势，确保其请求包先发出
+                if pref and item[0] == pref:
+                    time.sleep(0.01)
             concurrent.futures.wait(futures) # 等待正在处理的请求落地
         
         if success_event.is_set():

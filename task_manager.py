@@ -13,12 +13,12 @@ logger = logging.getLogger(__name__)
 
 class TaskManager:
     def __init__(self):
-        logger_config.setup_logging()
+        # 移除 logger_config.setup_logging()，改由外部显式调用或在 gui_server 中处理
         self.tasks_file = "tasks.json"
         self.tasks = self.load_tasks()
         self.user_bots = {} 
         self.running = True
-        self.lock = threading.Lock()
+        self.lock = threading.RLock() # 使用递归锁防止死锁
         self.time_offset = 0 
         self.avg_rtt = 0.05 # 默认假设 50ms
         self.last_sync_time = 0
@@ -34,11 +34,16 @@ class TaskManager:
 
         self.scheduler_thread = threading.Thread(target=self._scheduler_loop)
         self.scheduler_thread.daemon = True
-        self.scheduler_thread.start()
-
+        
         self.sync_thread = threading.Thread(target=self._time_sync_loop)
         self.sync_thread.daemon = True
-        self.sync_thread.start()
+
+    def start(self):
+        """显式开启后台线程，避免在 __init__ 中导致死锁"""
+        if not self.scheduler_thread.is_alive():
+            self.scheduler_thread.start()
+        if not self.sync_thread.is_alive():
+            self.sync_thread.start()
 
     def _time_sync_loop(self):
         """
@@ -70,19 +75,20 @@ class TaskManager:
                         if 0 < diff < 1800: # 30分钟内
                             is_near_task = True
             
-            # success = self._sync_server_time(precision=needs_precision) # 初始同步由 background thread 处理，避免启动挂起
-            success = self._sync_server_time(precision=needs_precision)
-            
+            # 🎯 改进同步策略：平时不折腾，临战前精准打击
             if needs_precision:
-                wait_sec = 60 # 临战状态，每分钟校准一次
+                sync_interval = 40    # 临战状态，每 40 秒校准一次
             elif is_near_task:
-                wait_sec = 300 # 战前准备，每 5 分钟校准一次
-            elif not success:
-                wait_sec = 60 # 同步失败，1 分钟后重试
+                sync_interval = 600   # 战前准备，每 10 分钟同步一次
             else:
-                wait_sec = 14400 # 平时佛系，4 小时校准一次
+                sync_interval = 43200 # 平时极简模式：每 12 小时同步一次
+
+            # 只有当达到同步间隔，或者处于临战状态（需要高精度）时，才执行网络同步
+            time_since_last = time.time() - self.last_sync_time
+            if time_since_last >= sync_interval or (needs_precision and time_since_last > 40):
+                self._sync_server_time(precision=needs_precision)
                 
-            time.sleep(wait_sec)
+            time.sleep(30) 
 
     def _sync_server_time(self, precision=False):
         try:
@@ -256,16 +262,24 @@ class TaskManager:
                     self.last_blacklist_clear_date = today_str
 
                 for task in self.tasks:
-                    # 跳过已完成且非循环的任务
-                    if task['status'] in ['completed', 'failed'] and not task.get('recurring'): continue
-                    
-                    # 跨天自动重置任务状态
+                    # 跨天自动重置任务状态：仅针对已结束（完成或失败）的任务
                     if task.get('last_run_date') != today_str:
                         if task['status'] in ['completed', 'failed']:
+                            old_status = task['status']
                             task['status'] = 'waiting'
+                            logger.info(f"[Reset] Task {task['id']} reset to WAITING (was {old_status})")
                         
-                        bot = self._get_bot(task['username'])
-                        task['seat_list'] = self._build_seat_list(task['floor'], task['seat_display'], task.get('preferred_seat', ""), bot)
+                            # 重新加载座位列表（防止黑名单变动）
+                            bot = self._get_bot(task['username'])
+                            task['seat_list'] = self._build_seat_list(task['floor'], task['seat_display'], task.get('preferred_seat', ""), bot)
+                            # 强制保存一次，确保重启后状态正确
+                            try:
+                                self.save_tasks()
+                            except Exception as e:
+                                logger.error(f"Error saving tasks during reset: {e}")
+
+                    # 跳过已完成且非循环的任务
+                    if task['status'] in ['completed', 'failed'] and not task.get('recurring'): continue
                     
                     if task.get('last_run_date') == today_str: continue
 

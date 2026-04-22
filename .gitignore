@@ -1,11 +1,18 @@
 # --- 隐私敏感文件 (必须忽略) ---
 config.py
 
-# --- 本地数据库与缓存 ---
+# --- 本地数据库与状态 ---
 tasks.json
+tasks.json.tmp
 seat_map.json
 debug_seats.json
 last_payload.json
+
+# --- 日志文件 ---
+logs/
+*.log
+Untitled-1.txt
+res.txt
 
 # --- 调试截图 ---
 *.png
@@ -25,8 +32,11 @@ venv/
 .vscode/
 .idea/
 *.swp
+.DS_Store
 
 # --- 测试脚本 (可选忽略) ---
+test_*.py
+build_precision_map.py
 test_refresh.py
 test_booking.py
 test_api.py

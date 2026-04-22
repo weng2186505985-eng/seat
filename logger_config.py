@@ -2,7 +2,7 @@
 import logging
 import os
 import sys
-from logging.handlers import RotatingFileHandler
+from logging.handlers import TimedRotatingFileHandler
 import threading
 
 # 使用 thread-local 存储 trace_id，实现全链路追踪
@@ -41,15 +41,23 @@ def setup_logging(level=logging.INFO):
         console_handler.setFormatter(formatter)
         root_logger.addHandler(console_handler)
 
-    # 文件输出 (按大小滚动)
-    file_path = os.path.join(log_dir, "seat.log")
-    if not any(isinstance(h, RotatingFileHandler) and h.baseFilename.endswith("seat.log") for h in root_logger.handlers):
-        file_handler = RotatingFileHandler(
+    # 文件输出：每日零点切割
+    import datetime
+    today = datetime.datetime.now().strftime("%Y-%m-%d")
+    file_path = os.path.join(log_dir, f"seat_{today}.log")
+    
+    # 检查是否已经存在同名 handler，避免重复添加
+    if not any(isinstance(h, TimedRotatingFileHandler) and f"seat_" in h.baseFilename for h in root_logger.handlers):
+        # when="midnight" 表示每天零点切割
+        file_handler = TimedRotatingFileHandler(
             file_path,
-            maxBytes=10*1024*1024, # 10MB
-            backupCount=5,
+            when="midnight",
+            interval=1,
+            backupCount=30,
             encoding="utf-8"
         )
+        # 设置旋转后的文件名格式为 seat_YYYY-MM-DD.log
+        file_handler.suffix = "%Y-%m-%d"
         file_handler.setFormatter(formatter)
         root_logger.addHandler(file_handler)
 
@@ -57,15 +65,18 @@ def setup_logging(level=logging.INFO):
     for handler in root_logger.handlers:
         handler.setFormatter(formatter)
 
-    # 也可以增加一个单独的错误日志文件
-    error_handler = RotatingFileHandler(
-        os.path.join(log_dir, "error.log"),
-        maxBytes=5*1024*1024,
-        backupCount=3,
-        encoding="utf-8"
-    )
-    error_handler.setLevel(logging.ERROR)
-    error_handler.setFormatter(formatter)
-    root_logger.addHandler(error_handler)
+    # 错误日志也改为按天切割
+    error_path = os.path.join(log_dir, "error.log")
+    if not any(isinstance(h, TimedRotatingFileHandler) and h.baseFilename.endswith("error.log") for h in root_logger.handlers):
+        error_handler = TimedRotatingFileHandler(
+            error_path,
+            when="midnight",
+            interval=1,
+            backupCount=30,
+            encoding="utf-8"
+        )
+        error_handler.setLevel(logging.ERROR)
+        error_handler.setFormatter(formatter)
+        root_logger.addHandler(error_handler)
 
     logging.info("Full-link logging system initialized.")

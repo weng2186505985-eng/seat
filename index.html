@@ -3,144 +3,630 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>HDU 任务制抢座助手</title>
-    <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;600&display=swap" rel="stylesheet">
+    <title>HDU 抢座助手 | 极简、高效、智能</title>
+    <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
     <style>
-        :root { --primary: #6366f1; --secondary: #a855f7; --bg: #0f172a; --card: rgba(30, 41, 59, 0.7); --text: #f8fafc; }
-        * { box-sizing: border-box; font-family: 'Outfit', sans-serif; }
-        body { background: radial-gradient(circle at top right, #1e1b4b, var(--bg)); color: var(--text); margin: 0; min-height: 100vh; padding: 20px; display: flex; justify-content: center; align-items: flex-start; }
-        
-        .container { width: 100%; max-width: 1200px; display: grid; grid-template-columns: 350px 1fr; gap: 20px; }
-        
-        .panel { background: var(--card); border-radius: 20px; padding: 25px; border: 1px solid rgba(255,255,255,0.1); backdrop-filter: blur(10px); }
-        .section-title { font-size: 0.75rem; text-transform: uppercase; color: var(--primary); margin: 15px 0 10px; letter-spacing: 1px; }
-        
-        input, select { width: 100%; background: rgba(0,0,0,0.3); border: 1px solid rgba(255,255,255,0.1); border-radius: 10px; padding: 10px; color: white; margin-bottom: 10px; }
-        label { font-size: 0.7rem; opacity: 0.5; margin-bottom: 5px; display: block; }
+        :root {
+            --primary: #4f46e5;
+            --primary-glow: rgba(79, 70, 229, 0.1);
+            --secondary: #10b981;
+            --secondary-glow: rgba(16, 185, 129, 0.1);
+            --accent: #f59e0b;
+            --danger: #ef4444;
+            --bg: #f8fafc;
+            --panel-bg: #ffffff;
+            --text-main: #0f172a;
+            --text-sub: #64748b;
+            --border: #e2e8f0;
+            --radius-lg: 20px;
+            --radius-md: 12px;
+            --shadow: 0 10px 15px -3px rgba(0,0,0,0.04), 0 4px 6px -4px rgba(0,0,0,0.02);
+        }
 
-        .btn { border: none; border-radius: 10px; padding: 12px; font-weight: 600; cursor: pointer; transition: 0.3s; width: 100%; margin-top: 10px; display: block; text-align: center; text-decoration: none; }
-        .btn-add { background: linear-gradient(135deg, var(--primary), var(--secondary)); color: white; }
-        .btn-quick { background: rgba(99, 102, 241, 0.2); color: #818cf8; border: 1px solid rgba(99, 102, 241, 0.3); }
-        .btn-now { background: rgba(255,255,255,0.05); color: white; border: 1px solid rgba(255,255,255,0.1); }
-        .btn:disabled { opacity: 0.5; cursor: not-allowed; }
-        
-        .task-list { display: grid; grid-template-columns: 1fr; gap: 15px; }
-        .task-card { background: rgba(255,255,255,0.03); border-radius: 15px; padding: 15px; border: 1px solid rgba(255,255,255,0.05); position: relative; }
-        .task-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px; }
-        
-        /* 状态颜色 */
-        .badge { font-size: 0.7rem; padding: 2px 8px; border-radius: 5px; font-weight: 600; color: white; }
-        .badge-waiting { background: #6366f1; }
-        .badge-warming { background: #f59e0b; }
-        .badge-ready { background: #3b82f6; }
-        .badge-snatching { background: #ec4899; }
-        .badge-completed { background: #4ade80; }
-        .badge-failed { background: #f87171; }
+        * { box-sizing: border-box; margin: 0; padding: 0; }
+        body { 
+            background-color: var(--bg); 
+            color: var(--text-main); 
+            font-family: 'Plus Jakarta Sans', sans-serif; 
+            line-height: 1.6;
+            min-height: 100vh;
+            padding: 40px 20px;
+        }
 
-        .task-delete { color: #f87171; cursor: pointer; font-size: 0.8rem; border: 1px solid #f87171; padding: 2px 6px; border-radius: 4px; }
+        .app-layout {
+            max-width: 1400px;
+            margin: 0 auto;
+            display: flex;
+            flex-direction: column;
+            gap: 28px;
+        }
 
-        .terminal { background: #000; border-radius: 15px; padding: 15px; font-family: monospace; font-size: 0.8rem; height: 320px; overflow-y: auto; margin-top: 20px; border: 1px solid #334155; }
-        .log-line { margin-bottom: 4px; }
-        .log-time { color: #64748b; }
-        .log-info { color: #fff; }
-        .log-success { color: #4ade80; }
-        .log-error { color: #f87171; }
-        .log-warn { color: #fbbf24; }
-        .sub-text { font-size: 0.7rem; color: #64748b; text-align: center; margin-top: 5px; display: block; }
+        .top-row {
+            display: grid;
+            grid-template-columns: 380px 1fr;
+            gap: 28px;
+        }
+
+        @media (max-width: 1024px) {
+            .top-row { grid-template-columns: 1fr; }
+        }
+
+        /* Module Style */
+        .module {
+            background: var(--panel-bg);
+            border-radius: var(--radius-lg);
+            border: 1px solid var(--border);
+            box-shadow: var(--shadow);
+            padding: 28px;
+            display: flex;
+            flex-direction: column;
+            gap: 20px;
+        }
+
+        .header-module {
+            background: none;
+            box-shadow: none;
+            border: none;
+            padding: 0 0 10px 0;
+            flex-direction: row;
+            justify-content: space-between;
+            align-items: flex-end;
+        }
+
+        .header-module h1 {
+            font-size: 28px;
+            font-weight: 800;
+            letter-spacing: -0.025em;
+            display: flex;
+            align-items: center;
+            gap: 12px;
+        }
+
+        .header-module p {
+            color: var(--text-sub);
+            font-size: 14px;
+            font-weight: 500;
+        }
+
+        /* Form Controls */
+        .input-group {
+            display: flex;
+            flex-direction: column;
+            gap: 6px;
+        }
+
+        .input-group label {
+            font-size: 11px;
+            font-weight: 700;
+            color: var(--text-sub);
+            text-transform: uppercase;
+            letter-spacing: 0.05em;
+        }
+
+        input, select {
+            width: 100%;
+            padding: 12px 14px;
+            border-radius: var(--radius-md);
+            border: 1px solid var(--border);
+            background: #fff;
+            font-size: 14px;
+            font-weight: 500;
+            transition: all 0.2s ease;
+            color: var(--text-main);
+        }
+
+        input:focus, select:focus {
+            outline: none;
+            border-color: var(--primary);
+            box-shadow: 0 0 0 4px var(--primary-glow);
+        }
+
+        /* Buttons */
+        .btn {
+            padding: 12px 20px;
+            border-radius: var(--radius-md);
+            font-size: 14px;
+            font-weight: 600;
+            cursor: pointer;
+            transition: all 0.2s ease;
+            border: none;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            gap: 8px;
+            width: 100%;
+        }
+
+        .btn-primary {
+            background: var(--primary);
+            color: white;
+            box-shadow: 0 4px 12px rgba(79, 70, 229, 0.15);
+        }
+
+        .btn-primary:hover {
+            background: #4338ca;
+            transform: translateY(-1px);
+        }
+
+        .btn-secondary {
+            background: var(--bg);
+            border: 1px solid var(--border);
+            color: var(--text-main);
+        }
+
+        .btn-secondary:hover {
+            background: #fff;
+            border-color: var(--text-sub);
+        }
+
+        .btn-ghost {
+            background: transparent;
+            color: var(--text-sub);
+            font-size: 12px;
+            font-weight: 600;
+            padding: 4px 8px;
+            width: auto;
+        }
+
+        .btn-ghost:hover {
+            color: var(--danger);
+            background: #fff1f2;
+        }
+
+        /* Task Cards */
+        .task-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fill, minmax(320px, 1fr));
+            gap: 20px;
+        }
+
+        .task-card {
+            background: #fff;
+            border-radius: var(--radius-md);
+            border: 1px solid var(--border);
+            padding: 24px;
+            transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+            position: relative;
+            display: flex;
+            flex-direction: column;
+            gap: 16px;
+        }
+
+        .task-card:hover {
+            transform: translateY(-4px);
+            box-shadow: 0 20px 25px -5px rgba(0,0,0,0.05);
+            border-color: var(--primary-glow);
+        }
+
+        .task-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+
+        .status-badge {
+            font-size: 10px;
+            font-weight: 800;
+            padding: 4px 10px;
+            border-radius: 99px;
+            text-transform: uppercase;
+            letter-spacing: 0.05em;
+        }
+
+        .status-waiting { background: #e0e7ff; color: #4338ca; }
+        .status-active { background: #fef3c7; color: #d97706; animation: breathe 2s infinite; }
+        .status-done { background: #dcfce7; color: #15803d; }
+        .status-err { background: #fee2e2; color: #b91c1c; }
+
+        @keyframes breathe {
+            0%, 100% { opacity: 1; }
+            50% { opacity: 0.6; }
+        }
+
+        .info-row {
+            display: flex;
+            align-items: center;
+            gap: 12px;
+            font-size: 14px;
+        }
+
+        .info-icon {
+            width: 32px;
+            height: 32px;
+            background: var(--bg);
+            border-radius: 10px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 16px;
+            flex-shrink: 0;
+        }
+
+        .info-content {
+            display: flex;
+            flex-direction: column;
+            overflow: hidden;
+        }
+
+        .info-label {
+            font-size: 11px;
+            color: var(--text-sub);
+            font-weight: 600;
+            text-transform: uppercase;
+            letter-spacing: 0.02em;
+        }
+
+        .info-value {
+            font-weight: 600;
+            color: var(--text-main);
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+        }
+
+        /* Dedicated Log Module */
+        .log-module {
+            flex: 1;
+        }
+
+        .log-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 20px;
+        }
+
+        .log-header h3 {
+            font-size: 18px;
+            font-weight: 700;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+
+        .log-controls {
+            display: flex;
+            align-items: center;
+            gap: 12px;
+        }
+
+        .log-date-picker {
+            padding: 6px 12px;
+            font-size: 13px;
+            width: auto;
+            border-radius: 8px;
+        }
+
+        .log-container {
+            background: #0f172a;
+            border-radius: var(--radius-md);
+            padding: 16px;
+            height: 500px;
+            overflow-y: auto;
+            font-family: 'JetBrains Mono', monospace;
+            font-size: 12px;
+            color: #94a3b8;
+            display: flex;
+            flex-direction: column;
+            gap: 4px;
+            box-shadow: inset 0 2px 4px rgba(0,0,0,0.2);
+        }
+
+        .log-item {
+            padding: 6px 12px;
+            border-radius: 6px;
+            display: grid;
+            grid-template-columns: 90px 70px 1fr;
+            gap: 12px;
+            transition: background 0.2s;
+            border-bottom: 1px solid rgba(255,255,255,0.03);
+        }
+
+        .log-item:last-child { border-bottom: none; }
+        .log-item:hover { background: rgba(255,255,255,0.05); }
+
+        .log-time { color: #475569; font-weight: 500; }
+        .log-level { font-weight: 800; text-align: center; border-radius: 4px; padding: 0 6px; font-size: 10px; }
+        .log-msg { color: #e2e8f0; line-height: 1.5; }
+
+        .level-info { color: #38bdf8; background: rgba(56, 189, 248, 0.1); }
+        .level-success { color: #4ade80; background: rgba(74, 222, 128, 0.1); }
+        .level-error { color: #fb7185; background: rgba(251, 113, 133, 0.1); }
+        .level-warning { color: #fbbf24; background: rgba(251, 191, 36, 0.1); }
+
+        /* Scrollbar */
+        ::-webkit-scrollbar { width: 8px; height: 8px; }
+        ::-webkit-scrollbar-track { background: transparent; }
+        ::-webkit-scrollbar-thumb { background: var(--border); border-radius: 10px; }
+        ::-webkit-scrollbar-thumb:hover { background: var(--text-sub); }
+
+        .divider { height: 1px; background: var(--border); margin: 8px 0; }
+        
+        .realtime-indicator {
+            display: flex;
+            align-items: center;
+            gap: 6px;
+            font-size: 11px;
+            font-weight: 700;
+            color: var(--secondary);
+            text-transform: uppercase;
+        }
+
+        .dot {
+            width: 8px;
+            height: 8px;
+            background: var(--secondary);
+            border-radius: 50%;
+            animation: pulse-dot 2s infinite;
+        }
+
+        @keyframes pulse-dot {
+            0% { transform: scale(1); opacity: 1; }
+            50% { transform: scale(1.3); opacity: 0.5; }
+            100% { transform: scale(1); opacity: 1; }
+        }
     </style>
 </head>
 <body>
-    <div class="container">
-        <div class="panel">
-            <h3 style="margin:0">任务管理</h3>
-            <div class="section-title">通行证</div>
-            <input type="text" id="username" placeholder="学号">
-            <input type="password" id="password" placeholder="密码">
-            
-            <div class="section-title">抢占目标</div>
-            <select id="floor">
-                <option value="宋韵云图（四楼）">宋韵云图（四楼）</option>
-                <option value="格物E堂（二楼东）">格物E堂（二楼东）</option>
-            </select>
-            <input type="text" id="seatRange" placeholder="座位范围 (如 17-58)">
-            
-            <div class="section-title">计划</div>
-            <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 10px;">
-                <div>
-                    <label>预约日期</label>
-                    <select id="dateOffset">
-                        <option value="0">今天</option>
-                        <option value="1">明天</option>
-                        <option value="2" selected>后天</option>
+    <div class="app-layout">
+        <header class="header-module">
+            <div>
+                <h1><span>🎯</span> HDU 抢座助手</h1>
+                <p>轻量、极简的图书馆自动化预约系统</p>
+            </div>
+            <div id="connection-status" class="realtime-indicator">
+                <span class="dot"></span>
+                系统运行中
+            </div>
+        </header>
+
+        <div class="top-row">
+            <!-- Sidebar: Config -->
+            <aside class="module">
+                <div class="input-group">
+                    <label>身份信息</label>
+                    <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 8px;">
+                        <input type="text" id="username" placeholder="学号">
+                        <input type="password" id="password" placeholder="密码">
+                    </div>
+                </div>
+
+                <div class="input-group">
+                    <label>场馆区域</label>
+                    <select id="floor">
+                        <option value="宋韵云图（四楼）">宋韵云图（四楼）</option>
+                        <option value="格物E堂（二楼东）">格物E堂（二楼东）</option>
                     </select>
                 </div>
-                <div>
-                    <label>触发时刻</label>
-                    <input type="text" id="triggerTime" value="20:00:00">
+
+                <div class="input-group">
+                    <label>座位号/范围 (如 17-58)</label>
+                    <input type="text" id="seatRange" placeholder="输入号段或特定座位">
                 </div>
-            </div>
-            
-            <button class="btn btn-add" id="btnAdd" onclick="addTask()">加入任务清单</button>
-            <button class="btn btn-quick" onclick="addQuickTask()">📌 添加每日固定任务</button>
-            <span class="sub-text">使用上方账号，每天20:00抢后天四楼17-58号座位</span>
-            <button class="btn btn-now" id="btnNow" onclick="bookNow()">立即强制捡漏</button>
-            
-            <div class="terminal" id="logContainer"></div>
+
+                <div class="input-group">
+                    <label>预约日期与触发时间</label>
+                    <div style="display: grid; grid-template-columns: 1.2fr 1fr; gap: 8px;">
+                        <select id="dateOffset"></select>
+                        <input type="text" id="triggerTime" value="20:00:00">
+                    </div>
+                </div>
+
+                <button class="btn btn-primary" id="btnAdd" onclick="addTask()">
+                    <span>🚀 添加新任务</span>
+                </button>
+
+                <div class="divider"></div>
+
+                <button class="btn btn-secondary" onclick="addQuickTask()">
+                    <span>📌 每日固定模式</span>
+                </button>
+                
+                <button class="btn btn-secondary" id="btnNow" onclick="bookNow()" style="border-style: dashed; margin-top: 4px;">
+                    <span>⚡ 立即强制抢占 (捡漏)</span>
+                </button>
+            </aside>
+
+            <!-- Main: Task Board -->
+            <main class="module">
+                <div class="log-header">
+                    <h3>📋 任务看板</h3>
+                    <span id="task-count" style="font-size: 12px; color: var(--text-sub);">0 个活跃任务</span>
+                </div>
+                <div class="task-grid" id="taskList">
+                    <div style="grid-column: 1/-1; padding: 60px 0; text-align: center; color: var(--text-sub);">
+                        <p style="font-size: 40px; margin-bottom: 20px; opacity: 0.2;">📭</p>
+                        <p style="font-weight: 600;">当前没有任何活跃任务</p>
+                    </div>
+                </div>
+            </main>
         </div>
 
-        <div class="panel">
-            <h3 style="margin:0 0 20px 0">当前任务看板</h3>
-            <div class="task-list" id="taskList"></div>
-        </div>
+        <!-- Bottom: Dedicated Logs -->
+        <section class="module log-module">
+            <div class="log-header">
+                <h3><span>📜</span> 活动日志</h3>
+                <div class="log-controls">
+                    <div id="log-realtime-status" class="realtime-indicator" style="margin-right: 15px;">
+                        <span class="dot"></span> 实时同步中
+                    </div>
+                    <label style="font-size: 11px; font-weight: 700; color: var(--text-sub); text-transform: uppercase;">查看历史</label>
+                    <input type="date" id="logDate" class="log-date-picker">
+                    <button class="btn btn-secondary" style="width: auto; padding: 6px 12px; font-size: 12px;" onclick="resetToToday()">今天</button>
+                </div>
+            </div>
+            <div class="log-container" id="logContainer"></div>
+        </section>
     </div>
 
     <script>
-        // 缓存
-        ['username', 'password', 'seatRange', 'triggerTime'].forEach(id => {
-            const saved = localStorage.getItem('hdu_' + id);
-            if(saved) document.getElementById(id).value = saved;
-            document.getElementById(id).oninput = () => localStorage.setItem('hdu_' + id, document.getElementById(id).value);
+        // Date Utilities
+        function getFormattedDate(offset) {
+            const d = new Date();
+            d.setDate(d.getDate() + offset);
+            const month = (d.getMonth() + 1).toString().padStart(2, '0');
+            const day = d.getDate().toString().padStart(2, '0');
+            const label = offset === 0 ? "今天" : offset === 1 ? "明天" : offset === 2 ? "后天" : "计划";
+            return { full: `${d.getFullYear()}-${month}-${day}`, short: `${month}-${day}`, label };
+        }
+
+        const todayFull = getFormattedDate(0).full;
+        document.getElementById('logDate').value = todayFull;
+        document.getElementById('logDate').onchange = () => {
+            const selectedDate = document.getElementById('logDate').value;
+            if (selectedDate === todayFull) {
+                isRealtime = true;
+                document.getElementById('log-realtime-status').style.display = 'flex';
+                fetchTasks(); // Trigger refresh
+            } else {
+                isRealtime = false;
+                document.getElementById('log-realtime-status').style.display = 'none';
+                fetchHistoryLogs(selectedDate);
+            }
+        };
+
+        function resetToToday() {
+            document.getElementById('logDate').value = todayFull;
+            document.getElementById('logDate').onchange();
+        }
+
+        // Initialize Date Select
+        const dateSelect = document.getElementById('dateOffset');
+        [0, 1, 2].forEach(offset => {
+            const info = getFormattedDate(offset);
+            const opt = document.createElement('option');
+            opt.value = offset;
+            opt.innerText = `${info.label} (${info.short})`;
+            if(offset === 2) opt.selected = true;
+            dateSelect.appendChild(opt);
         });
+
+        // Storage Logic
+        const FIELDS = ['username', 'password', 'seatRange', 'triggerTime'];
+        FIELDS.forEach(id => {
+            const val = localStorage.getItem('hdu_v4_' + id);
+            if(val) document.getElementById(id).value = val;
+            document.getElementById(id).oninput = e => localStorage.setItem('hdu_v4_' + id, e.target.value);
+        });
+
+        function getStatusInfo(status) {
+            status = status.toLowerCase();
+            if(['waiting', 'ready', 'warming'].includes(status)) return { class: 'status-waiting', label: '等待中' };
+            if(['snatching', 'active'].includes(status)) return { class: 'status-active', label: '冲击中' };
+            if(['completed', 'success', 'done'].includes(status)) return { class: 'status-done', label: '已完成' };
+            return { class: 'status-err', label: '已失效' };
+        }
 
         function renderTasks(tasks) {
             const container = document.getElementById('taskList');
-            if(tasks.length === 0) {
-                container.innerHTML = '<div style="opacity:0.3; text-align:center; padding:50px;">暂无预约任务</div>';
+            document.getElementById('task-count').innerText = (tasks ? tasks.length : 0) + " 个活跃任务";
+            if(!tasks || tasks.length === 0) {
+                container.innerHTML = `
+                    <div style="grid-column: 1/-1; padding: 60px 0; text-align: center; color: var(--text-sub);">
+                        <p style="font-size: 40px; margin-bottom: 20px; opacity: 0.2;">📭</p>
+                        <p style="font-weight: 600;">当前没有任何活跃任务</p>
+                    </div>`;
                 return;
             }
-            container.innerHTML = tasks.map(t => `
+
+            container.innerHTML = tasks.map(t => {
+                const info = getStatusInfo(t.status);
+                const targetDate = getFormattedDate(t.dateOffset).full;
+                return `
                 <div class="task-card">
                     <div class="task-header">
-                        <div>
-                            <span class="badge badge-${t.status.toLowerCase()}">${t.status.toUpperCase()}</span>
-                            ${t.recurring ? ' 🔁' : ''}
-                        </div>
-                        <span class="task-delete" onclick="deleteTask('${t.id}')">删除</span>
+                        <span class="status-badge ${info.class}">${info.label}</span>
+                        <button class="btn-ghost" onclick="deleteTask('${t.id}')">移除</button>
                     </div>
                     <div class="task-info">
-                        📍 场馆：${t.floor}<br>
-                        🪑 座位：${t.seat_display || t.seats || '未知'}<br>
-                        ⏱ 时间：${t.startTime || '09:00'} - ${t.endTime || '22:00'}<br>
-                        ⏰ 触发：<b style="color:var(--secondary)">${t.triggerTime}</b> | 预约：${t.dateOffset == 0 ? '今天' : t.dateOffset == 1 ? '明天' : '后天'}
-                        ${t.preferred_seat ? `<br><span style="color:#4ade80; font-size:0.75rem">✨ 已锁定首选：${t.preferred_seat}号</span>` : ''}
+                        <div class="info-row">
+                            <div class="info-icon">👤</div>
+                            <div class="info-content">
+                                <span class="info-label">账号</span>
+                                <span class="info-value">${t.username}</span>
+                            </div>
+                        </div>
+                        <div class="info-row">
+                            <div class="info-icon">📍</div>
+                            <div class="info-content">
+                                <span class="info-label">场馆</span>
+                                <span class="info-value">${t.floor}</span>
+                            </div>
+                        </div>
+                        <div class="info-row">
+                            <div class="info-icon">📅</div>
+                            <div class="info-content">
+                                <span class="info-label">时间</span>
+                                <span class="info-value">${targetDate} | ${t.triggerTime}</span>
+                            </div>
+                        </div>
+                        <div class="info-row">
+                            <div class="info-icon">🪑</div>
+                            <div class="info-content">
+                                <span class="info-label">目标范围</span>
+                                <span class="info-value">${t.seat_display || t.seats || '多选'}</span>
+                            </div>
+                        </div>
+                        ${t.preferred_seat ? `
+                        <div class="info-row" style="color: var(--secondary); margin-top: 4px; padding: 4px; background: var(--secondary-glow); border-radius: 8px;">
+                            <div class="info-icon" style="background: #fff; width: 24px; height: 24px; font-size: 12px;">⭐</div>
+                            <div class="info-content">
+                                <span class="info-label" style="color: var(--secondary);">明日优先抢</span>
+                                <span class="info-value">${t.preferred_seat} 号</span>
+                            </div>
+                        </div>` : ''}
                     </div>
-                </div>
-            `).join('');
+                </div>`;
+            }).join('');
         }
 
-        function validateInputs() {
-            const u = document.getElementById('username').value;
-            const p = document.getElementById('password').value;
-            const s = document.getElementById('seatRange').value;
-            if(!u || !p || !s) {
-                alert("请填写完整：学号、密码和座位范围！");
-                return false;
-            }
-            return true;
+        async function fetchHistoryLogs(date) {
+            try {
+                const r = await fetch(`/history_logs?date=${date}`);
+                const data = await r.json();
+                const container = document.getElementById('logContainer');
+                container.innerHTML = '';
+                if (data.logs && data.logs.length > 0) {
+                    appendLogs(data.logs, true);
+                } else {
+                    container.innerHTML = `<div style="padding: 20px; text-align: center; opacity: 0.5;">没有找到 ${date} 的日志记录</div>`;
+                }
+            } catch(e) {}
+        }
+
+        function appendLogs(logs, clear = false) {
+            const container = document.getElementById('logContainer');
+            if (clear) container.innerHTML = '';
+            
+            const fragment = document.createDocumentFragment();
+            logs.forEach(l => {
+                const item = document.createElement('div');
+                item.className = 'log-item';
+                item.innerHTML = `
+                    <span class="log-time">${l.time}</span>
+                    <span class="log-level level-${l.level}">${l.level.toUpperCase()}</span>
+                    <span class="log-msg">${l.msg}</span>
+                `;
+                fragment.appendChild(item);
+            });
+            container.appendChild(fragment);
+            container.scrollTop = container.scrollHeight;
+        }
+
+        async function fetchTasks() {
+            try {
+                const r = await fetch('/tasks');
+                const data = await r.json();
+                const hash = JSON.stringify(data);
+                if(window._lastHash !== hash) {
+                    renderTasks(data);
+                    window._lastHash = hash;
+                }
+            } catch(e) {}
         }
 
         async function addTask() {
-            if(!validateInputs()) return;
+            const btn = document.getElementById('btnAdd');
             const data = {
                 username: document.getElementById('username').value,
                 password: document.getElementById('password').value,
@@ -148,56 +634,37 @@
                 seatRange: document.getElementById('seatRange').value,
                 dateOffset: parseInt(document.getElementById('dateOffset').value),
                 triggerTime: document.getElementById('triggerTime').value,
-                startTime: "09:00",
-                endTime: "22:00",
-                recurring: false
+                startTime: "09:00", endTime: "22:00", recurring: false
             };
-            await fetch('/add_task', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify(data)
-            });
-            
-            const btn = document.getElementById('btnAdd');
-            const oldText = btn.innerText;
-            btn.innerText = "✅ 已添加";
-            setTimeout(() => btn.innerText = oldText, 1500);
-            
+            if(!data.username || !data.password || !data.seatRange) return alert("请填写完整信息");
+            btn.disabled = true;
+            btn.innerText = "提交中...";
+            await fetch('/add_task', { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(data) });
             fetchTasks();
+            setTimeout(() => { btn.disabled = false; btn.innerText = "🚀 添加新任务"; }, 1000);
         }
 
         async function addQuickTask() {
-            if(!validateInputs()) return;
+            const u = document.getElementById('username').value;
+            const p = document.getElementById('password').value;
+            if(!u || !p) return alert("请先输入账号密码");
             const data = {
-                username: document.getElementById('username').value,
-                password: document.getElementById('password').value,
-                floor: "宋韵云图（四楼）",
-                seatRange: "17-58",
-                startTime: "09:00",
-                endTime: "22:00",
-                dateOffset: 2,
-                triggerTime: "20:00:00",
-                recurring: true
+                username: u, password: p,
+                floor: "宋韵云图（四楼）", seatRange: "17-58",
+                startTime: "09:00", endTime: "22:00",
+                dateOffset: 2, triggerTime: "20:00:00", recurring: true
             };
-            await fetch('/add_task', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify(data)
-            });
+            await fetch('/add_task', { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(data) });
             fetchTasks();
         }
 
         async function deleteTask(id) {
+            if(!confirm("确定移除？")) return;
             await fetch(`/delete_task/${id}`, { method: 'POST' });
             fetchTasks();
         }
 
         async function bookNow() {
-            if(!validateInputs()) return;
-            const btn = document.getElementById('btnNow');
-            btn.disabled = true;
-            setTimeout(() => btn.disabled = false, 5000);
-
             const data = {
                 username: document.getElementById('username').value,
                 password: document.getElementById('password').value,
@@ -205,62 +672,29 @@
                 seatRange: document.getElementById('seatRange').value,
                 dateOffset: parseInt(document.getElementById('dateOffset').value),
                 triggerTime: document.getElementById('triggerTime').value,
-                startTime: "09:00",
-                endTime: "22:00"
+                startTime: "09:00", endTime: "22:00"
             };
-            await fetch('/book_now', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify(data)
-            });
+            await fetch('/book_now', { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(data) });
         }
 
-        let lastLogIndex = 0;
-        let lastTaskHash = "";
-
-        async function fetchTasks() {
-            try {
-                const resp = await fetch('/tasks');
-                const tasks = await resp.json();
-                
-                // 性能优化：只有数据变动时才重绘 DOM
-                const currentHash = JSON.stringify(tasks);
-                if (currentHash !== lastTaskHash) {
-                    renderTasks(tasks || []);
-                    lastTaskHash = currentHash;
-                }
-            } catch(e) {}
-        }
+        let lastLogIdx = 0;
+        let isRealtime = true;
 
         setInterval(async () => {
+            if (!isRealtime) return;
             try {
-                const resp = await fetch(`/get_logs?last_index=${lastLogIndex}`);
-                const data = await resp.json();
-                const container = document.getElementById('logContainer');
-                
-                if (data.logs && data.logs.length > 0) {
-                    const fragment = document.createDocumentFragment();
-                    data.logs.forEach(l => {
-                        let msg = l.msg;
-                        if (msg.trim().startsWith('{')) {
-                            try {
-                                const obj = JSON.parse(msg);
-                                msg = obj.MESSAGE || obj.msg || msg;
-                            } catch(e) {}
-                        }
-                        const div = document.createElement('div');
-                        div.className = 'log-line';
-                        div.innerHTML = `<span class="log-time">[${l.time}]</span> <span class="log-${l.level}">${msg}</span>`;
-                        fragment.appendChild(div);
-                    });
-                    container.appendChild(fragment);
-                    lastLogIndex = data.last_index;
-                    container.scrollTop = container.scrollHeight;
+                const r = await fetch(`/get_logs?last_index=${lastLogIdx}`);
+                const data = await r.json();
+                if(data.logs?.length > 0) {
+                    appendLogs(data.logs);
+                    lastLogIdx = data.last_index;
+                    const container = document.getElementById('logContainer');
+                    if(container.children.length > 500) for(let i=0; i<100; i++) container.removeChild(container.firstChild);
                 }
             } catch(e) {}
-        }, 1500); // 降低对数轮询频率至 1.5s
+        }, 1200);
 
-        setInterval(fetchTasks, 5000); // 任务列表轮询降至 5s
+        setInterval(fetchTasks, 3000);
         fetchTasks();
     </script>
 </body>
