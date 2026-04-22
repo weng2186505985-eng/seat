@@ -203,7 +203,8 @@ class TaskManager:
                 "preferred_seat": data.get('preferred_seat', ""),
                 "dateOffset": data['dateOffset'], "startTime": data['startTime'], "endTime": data['endTime'],
                 "triggerTime": data.get('triggerTime', "20:00:00"), "recurring": data.get('recurring', False),
-                "status": "waiting", "last_run_date": "", "created_at": datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                "status": "waiting", "last_run_date": "", "created_at": datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                "fail_reason_stats": {"busy": 0, "occupied": 0, "other": 0}
             }
             self.tasks.append(new_task)
         self.save_tasks()
@@ -374,6 +375,10 @@ class TaskManager:
                 if isinstance(res, str): # 如果返回了具体座位号
                     success = res
                     break
+                elif isinstance(res, dict): # 如果返回了失败统计
+                    with self.lock:
+                        for k in ["busy", "occupied", "other"]:
+                            task["fail_reason_stats"][k] += res.get(k, 0)
             
             with self.lock:
                 # 修复 Bug #7: 使用同步后的服务器时间作为运行标记，确保逻辑一致
@@ -387,5 +392,30 @@ class TaskManager:
                     task['status'] = "failed"
                     bot.notify(False, custom_title="❌ 抢座失败",
                                custom_msg=f"连续 2 轮未中已停止\n场馆：{task['floor']}\n座位：{task['seat_display']}")
+                
+                # 记录结构化日志
+                self._log_structured_event(task, success)
             self.save_tasks()
+
+    def _log_structured_event(self, task, success):
+        """记录结构化 JSON 日志用于后期统计"""
+        log_dir = "logs"
+        if not os.path.exists(log_dir): os.makedirs(log_dir)
+        stats_file = os.path.join(log_dir, "stats.json")
+        
+        event = {
+            "timestamp": datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            "task_id": task['id'],
+            "username": task['username'],
+            "floor": task['floor'],
+            "target": task['seat_display'],
+            "success": bool(success),
+            "result_seat": success if success else None,
+            "stats": task.get('fail_reason_stats', {})
+        }
+        
+        try:
+            with open(stats_file, "a", encoding="utf-8") as f:
+                f.write(json.dumps(event, ensure_ascii=False) + "\n")
+        except: pass
         threading.Thread(target=_worker, daemon=True).start()

@@ -43,6 +43,15 @@ class UltraFastBot:
             self.blacklist.clear()
             logger.info("Blacklist cleared for a new attempt.")
 
+    def warmup_connection(self):
+        """预热 TCP 连接，让连接池在触发时刻前已持有活跃连接 (省掉 50-150ms 握手耗时)"""
+        url = "https://hdu.huitu.zhishulib.com/Seat/Index/bookSeats?LAB_JSON=1"
+        try:
+            # 使用 HEAD 请求，仅建立连接不下载内容
+            self.session.head(url, timeout=3, headers={"User-Agent": self.fixed_ua})
+            logger.info("📡 TCP/TLS connection pre-warmed and ready in pool.")
+        except: pass
+
     def notify(self, success, seat_name="", custom_msg="", custom_title=""):
         """Server酱推送：异步发送，支持自定义标题 and 内容"""
         if not config.SCKEY: return
@@ -162,6 +171,8 @@ class UltraFastBot:
                             
                             if token_value and uid_value:
                                 self.is_warmed_up = True
+                                # 刷新成功后立即预热连接
+                                threading.Thread(target=self.warmup_connection, daemon=True).start()
                                 return True
                         return False
                 except Exception as e:
@@ -188,13 +199,18 @@ class UltraFastBot:
             rtt = task_params.get('rtt', 0.05)
             offset = task_params.get('time_offset', 0)
             # 目标本地时间 = 目标服务器时间 - 偏差 - (RTT/2) + 0.02s(安全余量)
-            # 这里的余量由 0.1s 缩减到 0.02s 以提高精度，防止过晚提交。
             target_local = trigger_ts - offset - (rtt / 2) + 0.02
             
             wait_time = target_local - time.time()
             if wait_time > 0:
-                logger.info(f"⏳ 正在精确等待打靶时刻... (预估等待 {wait_time:.3f}s, 已包含0.1s余量)")
-                time.sleep(wait_time)
+                logger.info(f"⏳ 正在精确等待打靶时刻... (预估等待 {wait_time:.3f}s, 已包含0.02s余量)")
+                # 极致精度：粗睡 + 忙等组合
+                if wait_time > 0.05:
+                    time.sleep(wait_time - 0.02) # 留出 20ms 进行忙等
+                
+                # 最后 20ms 忙等，精度提升到 < 1ms (代价是 20ms 内 CPU 占用 100%)
+                while time.time() < target_local:
+                    pass 
         else:
             time.sleep(random.uniform(0.1, 0.5))
 
@@ -222,6 +238,8 @@ class UltraFastBot:
 
         success_event = threading.Event()
         success_name_q = queue.Queue(maxsize=1) # 使用线程安全队列存储成功的座位号
+        fail_stats = {"busy": 0, "occupied": 0, "other": 0}
+        stats_lock = threading.Lock()
         current_trace_id = logger_config.get_trace_id()
 
         # 预先快照状态，减少锁竞争
@@ -284,6 +302,7 @@ class UltraFastBot:
                                 logger.debug(f"ℹ️ Seat {name} reported 'already reserved', likely another thread won.")
                             return True
                         elif "频繁" in msg or "太快" in msg:
+                            with stats_lock: fail_stats["busy"] += 1
                             if attempt == 0:
                                 # 进一步缩短间隔，并增加随机扰动防止被风控识别
                                 sleep_time = 0.5 + random.uniform(-0.1, 0.1)
@@ -291,11 +310,13 @@ class UltraFastBot:
                                 time.sleep(sleep_time)
                                 continue
                         elif any(kw in msg for kw in ["必须在预约人列表", "已被预约", "已被占用", "该时间段不可预约"]):
+                            with stats_lock: fail_stats["occupied"] += 1
                             if not success_event.is_set(): # 修复 Bug #2: 只有在没人成功时才拉黑
                                 with self.state_lock:
                                     self.blacklist.add(name)
                                 logger.info(f"📍 【{name}号】不可用: {msg}")
                         else:
+                            with stats_lock: fail_stats["other"] += 1
                             # 记录其他未定义的服务器响应
                             logger.info(f"📡 【{name}号】服务器响应: {msg}")
                     except Exception as e:
@@ -308,15 +329,22 @@ class UltraFastBot:
             return False
 
         # 使用并发执行。使用 submit 替代 map 以实现真正的“熔断”提交
-        with concurrent.futures.ThreadPoolExecutor(max_workers=3) as executor:
+        # 使用并发执行。第一批只打最优先的 1-2 个座位，50ms 后再并发打剩余的
+        with concurrent.futures.ThreadPoolExecutor(max_workers=5) as executor:
             futures = []
-            for item in seat_list:
-                if success_event.is_set(): break # 及时止损，不再提交新任务
+            for i, item in enumerate(seat_list):
+                if success_event.is_set(): break 
+                
                 futures.append(executor.submit(try_book, item))
-                # 如果是“昨日/首选”座位，给一个极短（10ms）的领先优势，确保其请求包先发出
-                if pref and item[0] == pref:
+                
+                # 激进策略：如果是首个（最高优）座位，给一个 50ms 的绝对保护期
+                if i == 0:
+                    time.sleep(0.05)
+                # 之后的座位每隔 10ms 提交一个，平滑流量，防止被风控识别为瞬间突发请求
+                else:
                     time.sleep(0.01)
-            concurrent.futures.wait(futures) # 等待正在处理的请求落地
+                    
+            concurrent.futures.wait(futures) 
         
         if success_event.is_set():
             # 修改通知描述，包含场馆和日期
@@ -324,4 +352,4 @@ class UltraFastBot:
             desc = f"座位：{s_name}\n场馆：{hall}\n日期：{target_date}"
             self.notify(True, seat_name=s_name, custom_msg=desc) 
             return s_name # 返回具体座位号
-        return False
+        return fail_stats # 失败则返回统计原因
