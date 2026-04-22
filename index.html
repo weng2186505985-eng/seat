@@ -394,8 +394,7 @@
                 <div class="input-group">
                     <label>场馆区域</label>
                     <select id="floor">
-                        <option value="宋韵云图（四楼）">宋韵云图（四楼）</option>
-                        <option value="格物E堂（二楼东）">格物E堂（二楼东）</option>
+                        <option value="" disabled selected>加载中...</option>
                     </select>
                 </div>
 
@@ -500,6 +499,34 @@
             if(offset === 2) opt.selected = true;
             dateSelect.appendChild(opt);
         });
+
+        // 🎯 动态加载场馆列表（单一数据源：seat_map.json → /get_halls）
+        async function loadHalls() {
+            try {
+                const r = await fetch('/get_halls');
+                const data = await r.json();
+                const floorSelect = document.getElementById('floor');
+                floorSelect.innerHTML = '';
+                if (data.halls && data.halls.length > 0) {
+                    data.halls.forEach((hall, idx) => {
+                        const opt = document.createElement('option');
+                        opt.value = hall;
+                        opt.textContent = hall;
+                        if (idx === 0) opt.selected = true;
+                        floorSelect.appendChild(opt);
+                    });
+                    // 恢复上次选择
+                    const saved = localStorage.getItem('hdu_v4_floor');
+                    if (saved && data.halls.includes(saved)) floorSelect.value = saved;
+                } else {
+                    floorSelect.innerHTML = '<option value="" disabled>无可用场馆</option>';
+                }
+                floorSelect.onchange = () => localStorage.setItem('hdu_v4_floor', floorSelect.value);
+            } catch(e) {
+                console.error('加载场馆失败', e);
+            }
+        }
+        loadHalls();
 
         // Storage Logic
         const FIELDS = ['username', 'password', 'seatRange', 'triggerTime'];
@@ -647,10 +674,12 @@
         async function addQuickTask() {
             const u = document.getElementById('username').value;
             const p = document.getElementById('password').value;
+            const currentFloor = document.getElementById('floor').value;
             if(!u || !p) return alert("请先输入账号密码");
+            if(!currentFloor) return alert("请等待场馆列表加载完成");
             const data = {
                 username: u, password: p,
-                floor: "宋韵云图（四楼）", seatRange: "17-58",
+                floor: currentFloor, seatRange: document.getElementById('seatRange').value || "17-58",
                 startTime: "09:00", endTime: "22:00",
                 dateOffset: 2, triggerTime: "20:00:00", recurring: true
             };

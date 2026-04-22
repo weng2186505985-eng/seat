@@ -24,9 +24,7 @@ class TaskManager:
         self.last_sync_time = 0
         self.firing_events = {} # {trigger_ts: threading.Event()} 🎯 统一发令枪池
         
-        # 🎯 浏览器实例池 (共享引擎，隔离 Context)
-        self._pw_instance = None
-        self._browser = None
+        self._local = threading.local()
         self.last_blacklist_clear_date = "" # 记录上次清空黑名单的日期
         
         self.seat_map = {}
@@ -45,6 +43,14 @@ class TaskManager:
 
     def start(self):
         """显式开启后台线程，避免在 __init__ 中导致死锁"""
+        # 🎯 启动前清洗僵尸任务：上次崩溃可能遗留 snatching 状态的任务
+        with self.lock:
+            for task in self.tasks:
+                if task['status'] == 'snatching':
+                    logger.warning(f"🧹 [Startup] 清洗僵尸任务 {task['id']}：snatching → waiting")
+                    task['status'] = 'waiting'
+            self.save_tasks()
+        
         if not self.scheduler_thread.is_alive():
             self.scheduler_thread.start()
         if not self.sync_thread.is_alive():
@@ -124,22 +130,12 @@ class TaskManager:
             else:
                 date_str = resp.headers.get('Date')
                 if date_str and precision:
-                    # 🎯 战前突击模式：跳秒捕捉算法
-                    last_date = date_str
-                    # 步长 300ms，最多 8 次嗅探，跨度 2.4s，足以抓到变秒点且对本地 IP 更友好
-                    for _ in range(8):
-                        time.sleep(0.3)
-                        r = requests.head(url, timeout=3)
-                        t_sniff = time.time()
-                        new_date = r.headers.get('Date')
-                        if new_date != last_date:
-                            server_ts = datetime.datetime.strptime(new_date, '%a, %d %b %Y %H:%M:%S GMT').replace(
-                                tzinfo=datetime.timezone.utc).timestamp()
-                            rtt_sniff = r.elapsed.total_seconds()
-                            self.time_offset = (server_ts + rtt_sniff / 2) - t_sniff
-                            logger.info(f"🎯 [极致精度] 战时跳秒捕捉成功！偏差: {self.time_offset*1000:.1f}ms")
-                            break
-                        last_date = new_date
+                    # 🎯 战前突击模式：跳秒捕捉算法（在独立线程中执行，避免阻塞同步主循环 2.4s）
+                    threading.Thread(
+                        target=self._jump_second_capture, 
+                        args=(url, date_str), 
+                        daemon=True
+                    ).start()
                 elif date_str:
                     # 🕒 日常佛系模式：中值修正 (+0.5s)
                     server_ts = datetime.datetime.strptime(date_str, '%a, %d %b %Y %H:%M:%S GMT').replace(
@@ -156,6 +152,29 @@ class TaskManager:
         except Exception as e:
             logger.warning(f"⚠️ 时钟同步异常: {e}")
             return False
+
+    def _jump_second_capture(self, url, initial_date):
+        """跳秒捕捉算法：独立线程执行，避免阻塞 _time_sync_loop 主循环"""
+        last_date = initial_date
+        # 步长 300ms，最多 8 次嗅探，跨度 2.4s
+        for _ in range(8):
+            time.sleep(0.3)
+            try:
+                r = requests.head(url, timeout=3)
+                t_sniff = time.time()
+                new_date = r.headers.get('Date')
+                if new_date and new_date != last_date:
+                    server_ts = datetime.datetime.strptime(new_date, '%a, %d %b %Y %H:%M:%S GMT').replace(
+                        tzinfo=datetime.timezone.utc).timestamp()
+                    rtt_sniff = r.elapsed.total_seconds()
+                    self.time_offset = (server_ts + rtt_sniff / 2) - t_sniff
+                    self.last_sync_time = time.time()
+                    logger.info(f"🎯 [极致精度] 战时跳秒捕捉成功！偏差: {self.time_offset*1000:.1f}ms")
+                    return
+                last_date = new_date
+            except Exception as e:
+                logger.debug(f"跳秒嗅探异常: {e}")
+        logger.info("⏱️ 跳秒捕捉未能在 8 次嗅探内检测到变秒，回退到中值估算")
 
     def load_tasks(self):
         if os.path.exists(self.tasks_file):
@@ -306,9 +325,13 @@ class TaskManager:
                     
                     if task.get('last_run_date') == today_str: continue
 
-                    t_time = datetime.datetime.strptime(task['triggerTime'], "%H:%M:%S").replace(
-                        year=now.year, month=now.month, day=now.day
-                    )
+                    # 🎯 性能优化：缓存字符串解析结果，减少持锁时间
+                    if '_trigger_dt' not in task or task.get('_trigger_raw') != task['triggerTime']:
+                        task['_trigger_dt'] = datetime.datetime.strptime(task['triggerTime'], "%H:%M:%S")
+                        task['_trigger_raw'] = task['triggerTime']
+                    
+                    t_time = task['_trigger_dt'].replace(year=now.year, month=now.month, day=now.day)
+                    
                     if now > t_time + datetime.timedelta(minutes=2):
                         t_time += datetime.timedelta(days=1)
                     
@@ -327,8 +350,11 @@ class TaskManager:
                     if diff <= 2 and task['status'] in ["waiting", "warming", "ready"]:
                         trigger_ts = t_time.timestamp()
                         was_ready = (task['status'] == "ready")
+                        if not was_ready and task['status'] == "waiting":
+                            logger.warning(f"⚠️ 任务 {task['id']} 跳过预热直接进入抢座，发包可能会延迟")
                         task['status'] = "snatching"
-                        tasks_to_snatch.append((task.copy(), was_ready, trigger_ts))
+                        # 🎯 修复 Bug #3: 移除 .copy()，确保状态更新能写回 self.tasks 并被持久化
+                        tasks_to_snatch.append((task, was_ready, trigger_ts))
 
             for task in tasks_to_warmup: self._run_task_warmup(task)
             for task, skip, t_ts in tasks_to_snatch: self._run_task_snatch(task, skip, t_ts)
@@ -445,16 +471,19 @@ class TaskManager:
                 threading.Timer(1.0, lambda: self.firing_events.pop(t_ts, None)).start()
 
     def get_shared_browser(self):
-        """获取共享浏览器实例 (实现 Browser Pool)"""
+        """
+        获取当前线程的浏览器实例
+        修复 Bug #2: Playwright sync_api 不支持多线程跨线程调用 context/page
+        通过 threading.local 确保每个线程拥有独立的 Playwright 实例和浏览器
+        """
         from playwright.sync_api import sync_playwright
-        with self.lock:
-            if not self._pw_instance:
-                self._pw_instance = sync_playwright().start()
-                self._browser = self._pw_instance.chromium.launch(headless=True)
-            return self._browser
+        if not hasattr(self._local, 'pw'):
+            self._local.pw = sync_playwright().start()
+            self._local.browser = self._local.pw.chromium.launch(headless=True)
+        return self._local.browser
 
     def _log_structured_event(self, task, success):
-        """记录结构化 JSON 日志用于后期统计"""
+        """记录结构化 JSON 日志用于后期统计（含大小限制自动轮转）"""
         log_dir = "logs"
         if not os.path.exists(log_dir): os.makedirs(log_dir)
         stats_file = os.path.join(log_dir, "stats.json")
@@ -471,6 +500,13 @@ class TaskManager:
         }
         
         try:
+            # 🎯 大小限制：超过 10MB 自动轮转，防止无限增长
+            max_size = 10 * 1024 * 1024  # 10MB
+            if os.path.exists(stats_file) and os.path.getsize(stats_file) > max_size:
+                archive_name = os.path.join(log_dir, f"stats_{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}.json")
+                os.rename(stats_file, archive_name)
+                logger.info(f"📦 stats.json 已轮转归档为 {archive_name}")
+            
             with open(stats_file, "a", encoding="utf-8") as f:
                 f.write(json.dumps(event, ensure_ascii=False) + "\n")
         except: pass

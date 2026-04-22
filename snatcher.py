@@ -11,9 +11,9 @@ import threading
 import concurrent.futures
 import queue
 try:
-    from curl_cffi import requests
+    from curl_cffi import requests as cffi_requests
 except ImportError:
-    import requests
+    cffi_requests = None
 from playwright.sync_api import sync_playwright
 import config
 import logger_config
@@ -22,7 +22,13 @@ logger = logging.getLogger(__name__)
 
 class UltraFastBot:
     def __init__(self, browser_provider=None):
-        self.session = requests.Session()
+        self._use_cffi = bool(cffi_requests)
+        if self._use_cffi:
+            # 🎯 curl_cffi 的 Session 不是线程安全的，使用 threading.local 隔离
+            self._thread_local = threading.local()
+            self.session = cffi_requests.Session()  # 主线程 session（用于预热、登录等单线程操作）
+        else:
+            self.session = requests.Session()
         # 🎯 UA 抖动库：模拟不同版本的 iOS 设备
         self.ua_list = [
             "Mozilla/5.0 (iPhone; CPU iPhone OS 16_5 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.5 Mobile/15E148 Safari/604.1",
@@ -48,6 +54,17 @@ class UltraFastBot:
         adapter = HTTPAdapter(pool_connections=10, pool_maxsize=10)
         self.session.mount("https://", adapter)
         self.session.mount("http://", adapter)
+
+    def _get_thread_session(self):
+        """获取当前线程的 session（curl_cffi 模式下每线程独立，requests 模式下共享）"""
+        if not self._use_cffi:
+            return self.session  # requests.Session 连接池本身是线程安全的
+        # curl_cffi: 每个线程独立 session
+        if not hasattr(self._thread_local, 'session'):
+            s = cffi_requests.Session()
+            s.impersonate = "safari15_5"
+            self._thread_local.session = s
+        return self._thread_local.session
 
     # --- 浏览器资源管理 ---
     # 移除原本不符合线程安全规范的全局单例浏览器，改为在每个凭证刷新任务中独立启动
@@ -294,7 +311,8 @@ class UltraFastBot:
                         data = {"beginTime": start_ts, "duration": dur_sec, "seats[0]": s_id, "seatBookers[0]": snap_uid}
                         
                         try:
-                            resp = self.session.post(url, data=data, headers=current_headers, timeout=(2.0, 8.0))
+                            sess = self._get_thread_session()
+                            resp = sess.post(url, data=data, headers=current_headers, timeout=(2.0, 8.0))
                             res_json = resp.json()
                         except Exception as e:
                             logger.warning(f"⚠️ 【{name}号】网络请求或解析失败 (重试 {attempt}): {e}")

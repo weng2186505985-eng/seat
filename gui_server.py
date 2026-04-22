@@ -6,6 +6,7 @@ from pydantic import BaseModel
 from typing import Optional
 import logging
 import time
+import os
 import threading
 from task_manager import TaskManager
 from snatcher import UltraFastBot
@@ -67,6 +68,13 @@ class TaskItem(BaseModel):
 async def get_index():
     return FileResponse("index.html")
 
+@app.get("/get_halls")
+async def get_halls():
+    """动态返回 seat_map.json 中所有场馆名，作为前端下拉列表的单一数据源"""
+    if not tm or not tm.seat_map:
+        return {"halls": []}
+    return {"halls": list(tm.seat_map.keys())}
+
 @app.get("/get_logs")
 async def get_logs(last_index: int = 0):
     # 将 deque 转换为 list 返回
@@ -80,13 +88,8 @@ async def get_logs(last_index: int = 0):
 async def get_history_logs(date: str):
     """获取指定日期的历史日志"""
     log_dir = "logs"
-    # 今天的情况
-    today = time.strftime("%Y-%m-%d")
-    if date == today:
-        file_path = os.path.join(log_dir, "seat.log")
-    else:
-        # TimedRotatingFileHandler 默认格式为 seat.log.YYYY-MM-DD
-        file_path = os.path.join(log_dir, f"seat.log.{date}")
+    # 🎯 修复：文件名格式与 logger_config.py 保持一致 → seat_YYYY-MM-DD.log
+    file_path = os.path.join(log_dir, f"seat_{date}.log")
     
     if not os.path.exists(file_path):
         return {"logs": [], "error": "日志文件不存在"}
